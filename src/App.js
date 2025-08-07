@@ -845,7 +845,7 @@ export default function App() {
                         </div>
                     </CollapsibleSection>
 
-                    <CollapsibleSection title="Project Timeline" icon={Trello} defaultOpen={true}>
+                    <CollapsibleSection title="Project Timeline" icon={Trello} defaultOpen={false}>
                         <div className="mb-4 px-1">
                             <label htmlFor="gantt-filter" className="block text-sm font-medium text-slate-600 mb-1">Filter by Job Name</label>
                             <input
