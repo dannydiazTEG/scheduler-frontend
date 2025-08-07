@@ -1,11 +1,13 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { PlusCircle, MinusCircle, Upload, Download, Play, XCircle, ChevronDown, ChevronUp, UserPlus, Trash2, Clock, BarChart, LineChart, RefreshCw, Users, GitMerge, DollarSign, Building, Briefcase, Trello, HeartPulse, Lightbulb, Wrench, CheckCircle } from 'lucide-react';
 
 // Helper function to parse dates, robust to different formats
 const parseDate = (dateStr) => {
     if (!dateStr || typeof dateStr !== 'string') return null;
+    // Handles both YYYY-MM-DD and YYYY/MM/DD
     const sanitizedStr = dateStr.replace(/-/g, '/');
     const date = new Date(sanitizedStr);
+    // Check if the parsed date is valid
     return isNaN(date.getTime()) ? null : date;
 };
 
@@ -25,15 +27,6 @@ const formatDateForGantt = (dateStr) => {
     return `${d.getMonth() + 1}/${d.getDate()}`;
 };
 
-
-// Helper to get the start of the week (Sunday) for a given date
-const getWeekStartDate = (date) => {
-    const d = new Date(date);
-    const day = d.getDay();
-    const diff = d.getDate() - day;
-    return new Date(d.setDate(diff));
-};
-
 // Helper to add days to a date
 const addDays = (date, days) => {
     const result = new Date(date);
@@ -45,7 +38,7 @@ const addDays = (date, days) => {
 const TEAM_COLORS = ['#3b82f6', '#000000', '#f97316', '#8b5cf6', '#10b981', '#ef4444', '#f59e0b', '#826c60', '#6366f1', '#d946ef', '#8b4513'];
 const TEAM_SORT_ORDER = ['CNC', 'Metal', 'Scenic', 'Paint', 'Carpentry', 'Assembly', 'Tech', 'Hybrid'];
 
-const EFFICIENCY_DATA_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT-velZ6evgYWuTWpEnd6_NWzlK8hHt02sTOoYU0CrAPY9P3HCrgzFkQTCI84j2WF9_p_wef7ef-7ll/pub?gid=0&single=true&output=csv'; 
+const EFFICIENCY_DATA_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT-velZ6evgYWuTWpEnd6_NWzlK8hHt02sTOoYU0CrAPY9P3HCrgzFkQTCI84j2WF9_p_wef7ef-7ll/pub?gid=0&single=true&output=csv';
 const ROUTING_DATA_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTTmWdo7GyGwrG1iru8KBk166ndwV802lg3slbcrgekwdLXWWb9WF-i0snEipFq-AMVMTNH9qUWxHH_/pub?gid=1072114065&single=true&output=csv';
 
 // Default state values
@@ -111,7 +104,7 @@ export default function App() {
     const [ptoEntries, setPtoEntries] = useState([]);
     const [workHourOverrides, setWorkHourOverrides] = useState([]);
     
-    const [projectTasks, setProjectTasks] = useState([]); 
+    const [projectTasks, setProjectTasks] = useState([]);
     const [routingData, setRoutingData] = useState([]);
     const [builderState, setBuilderState] = useState({
         selectedTemplates: [],
@@ -506,7 +499,7 @@ export default function App() {
         setProjectedCompletion(null);
         setCompletedTasks([]);
         
-        const currentState = JSON.stringify({ params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, startDateOverrides, endDateOverrides, projectTasks });
+        const currentState = JSON.stringify({ params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, startDateOverrides, endDateOverrides, projectTasks });
         setLastRunState(currentState);
         setNeedsRerun(false);
 
@@ -517,7 +510,7 @@ export default function App() {
                 DueDate: formatDate(t.DueDate),
             })),
             params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides,
-            hybridWorkers, efficiencyData, teamMemberNameMap,
+            hybridWorkers, efficiencyData, teamMemberNameMap, startDateOverrides, endDateOverrides
         };
 
         try {
@@ -542,19 +535,27 @@ export default function App() {
             setFinalSchedule(results.finalSchedule || []);
             
             const projectSummaryList = (results.projectSummary || []).map(p => {
-                const diffDays = Math.round((parseDate(p.DueDate).getTime() - parseDate(p.FinishDate).getTime()) / (1000 * 60 * 60 * 24));
+                const dueDate = parseDate(p.DueDate);
+                const finishDate = parseDate(p.FinishDate);
+                const diffDays = (dueDate && finishDate) ? Math.round((dueDate.getTime() - finishDate.getTime()) / (1000 * 60 * 60 * 24)) : 0;
                 return { ...p, OriginalStartDate: p.StartDate, daysVariance: diffDays };
             }).sort((a,b) => a.Store.localeCompare(b.Store) || a.Project.localeCompare(b.Project));
 
             const storeSummaryMap = {};
             projectSummaryList.forEach(p => {
                 const store = p.Store;
+                const startDate = parseDate(p.StartDate);
+                const finishDate = parseDate(p.FinishDate);
+                const dueDate = parseDate(p.DueDate);
+
+                if (!startDate || !finishDate || !dueDate) return;
+
                 if (!storeSummaryMap[store]) {
-                    storeSummaryMap[store] = { Store: store, StartDate: parseDate(p.StartDate), FinishDate: parseDate(p.FinishDate), DueDate: parseDate(p.DueDate) };
+                    storeSummaryMap[store] = { Store: store, StartDate: startDate, FinishDate: finishDate, DueDate: dueDate };
                 } else {
-                    if (parseDate(p.StartDate) < storeSummaryMap[store].StartDate) storeSummaryMap[store].StartDate = parseDate(p.StartDate);
-                    if (parseDate(p.FinishDate) > storeSummaryMap[store].FinishDate) storeSummaryMap[store].FinishDate = parseDate(p.FinishDate);
-                    if (parseDate(p.DueDate) > storeSummaryMap[store].DueDate) storeSummaryMap[store].DueDate = parseDate(p.DueDate);
+                    if (startDate < storeSummaryMap[store].StartDate) storeSummaryMap[store].StartDate = startDate;
+                    if (finishDate > storeSummaryMap[store].FinishDate) storeSummaryMap[store].FinishDate = finishDate;
+                    if (dueDate > storeSummaryMap[store].DueDate) storeSummaryMap[store].DueDate = dueDate;
                 }
             });
              const storeSummaryList = Object.values(storeSummaryMap).map(s => {
@@ -576,7 +577,7 @@ export default function App() {
             const errorMessage = e.message || "An unknown error occurred.";
             if (errorMessage.includes("No tasks could be generated")) {
                 addLog("Server Info: All tasks for the submitted projects are already complete or no valid routing was found.");
-                setError(''); 
+                setError('');
             } else {
                  setError(`Failed to connect to scheduling server: ${errorMessage}`);
                  addLog(`Error: ${errorMessage}`);
@@ -587,7 +588,7 @@ export default function App() {
             setProgressMessage("Finalizing results...");
             setTimeout(() => setIsLoading(false), 500);
         }
-    }, [projectTasks, params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, addLog]);
+    }, [projectTasks, params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, addLog, startDateOverrides, endDateOverrides]);
 
 
     const downloadCSV = (type) => {
@@ -655,7 +656,7 @@ export default function App() {
                 "Job-001,Store-A,SKU-01-A,Widget A,Paint Prep,2,5,1500.00,2025-07-01,2025-07-15",
             ];
             filename = 'sample_project_data.csv';
-        } else { 
+        } else {
             headers = "TemplateName,SKU,SKU Name,Operation,Order,Estimated Hours,Value";
             rows = [
                 "Standard Widget,WIDGET-STD,Standard Widget,Carpentry/Woodwork,1,10,1500.00",
@@ -720,9 +721,9 @@ export default function App() {
                                     <div className="grid grid-cols-3 gap-2">
                                         {projectTemplates.map(template => (
                                             <div key={template} className="flex items-center py-1">
-                                                <input 
-                                                    id={template} 
-                                                    type="checkbox" 
+                                                <input
+                                                    id={template}
+                                                    type="checkbox"
                                                     className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                                                     checked={builderState.selectedTemplates.includes(template)}
                                                     onChange={() => handleTemplateSelectionChange(template)}
@@ -832,7 +833,7 @@ export default function App() {
                                     <div key={i} className="p-3 bg-yellow-100 border-l-4 border-yellow-500 rounded-r-lg">
                                         <p className="font-semibold text-yellow-800">Overload on {rec.team}</p>
                                         <p className="text-sm text-yellow-700">
-                                            The {rec.team} team is projected to be over 120% capacity for {rec.weeks.length} consecutive weeks starting {rec.weeks[0]}. 
+                                            The {rec.team} team is projected to be over 120% capacity for {rec.weeks.length} consecutive weeks starting {rec.weeks[0]}.
                                             The main contributors are: <span className="font-semibold">{rec.topProjects.join(', ')}</span>.
                                             Consider delaying one of these projects to alleviate the bottleneck.
                                         </p>
@@ -844,7 +845,7 @@ export default function App() {
                         </div>
                     </CollapsibleSection>
 
-                    <CollapsibleSection title="Project Timeline" icon={Trello} defaultOpen={false}>
+                    <CollapsibleSection title="Project Timeline" icon={Trello} defaultOpen={true}>
                         <div className="mb-4 px-1">
                             <label htmlFor="gantt-filter" className="block text-sm font-medium text-slate-600 mb-1">Filter by Job Name</label>
                             <input
@@ -882,7 +883,7 @@ export default function App() {
                                 <button onClick={() => setSummaryView('store')} className={`px-3 py-1 text-sm font-semibold rounded-md flex items-center ${summaryView === 'store' ? 'bg-white shadow text-blue-600' : 'text-slate-600 hover:bg-slate-200'}`}><Building className="w-4 h-4 mr-2"/>Store View</button>
                             </div>
                         </div>
-                        <div className="overflow-auto relative">
+                        <div className="overflow-auto relative max-h-96">
                             {summaryData[summaryView].length > 0 ? (
                                 <>
                                     <table className="min-w-full divide-y divide-slate-200 text-sm">
@@ -1045,27 +1046,44 @@ export default function App() {
     );
 }
 
-// --- Gantt Chart Component ---
+// --- Gantt Chart Component (FIXED) ---
 function ProjectGanttChartComponent({ projects, width, height, onDateChange, onEndDateChange, startDateOverrides, endDateOverrides }) {
     const [dragState, setDragState] = useState(null);
     const svgRef = useRef(null);
 
     const margin = { top: 20, right: 20, bottom: 20, left: 150 };
 
+    // Memoize the date range calculation for performance and correctness.
+    // This is the primary fix: it filters out invalid dates before calculating min/max.
+    const { minDate, maxDate } = useMemo(() => {
+        if (!projects || projects.length === 0) return { minDate: null, maxDate: null };
+
+        const validTimestamps = projects.flatMap(p => [
+            parseDate(p.OriginalStartDate),
+            parseDate(p.DueDate),
+            parseDate(startDateOverrides[p.Project] || p.StartDate),
+            parseDate(endDateOverrides[p.Project] || p.FinishDate)
+        ]).filter(d => d instanceof Date && !isNaN(d.getTime())).map(d => d.getTime());
+
+        if (validTimestamps.length === 0) return { minDate: null, maxDate: null };
+
+        const min = new Date(Math.min(...validTimestamps));
+        const max = new Date(Math.max(...validTimestamps));
+        
+        min.setDate(min.getDate() - 7);
+        max.setDate(max.getDate() + 7);
+
+        return { minDate: min, maxDate: max };
+    }, [projects, startDateOverrides, endDateOverrides]);
+
     useEffect(() => {
         const handleMouseMove = (e) => {
-            if (!dragState || !projects || projects.length === 0 || width === 0) return;
+            if (!dragState || !minDate || !maxDate || width <= 0) return;
 
-            const allDates = projects.flatMap(p => [
-                parseDate(p.OriginalStartDate), parseDate(p.DueDate),
-                parseDate(startDateOverrides[p.Project] || p.StartDate),
-                parseDate(endDateOverrides[p.Project] || p.FinishDate)
-            ]);
-            const minDate = new Date(Math.min(...allDates));
-            const maxDate = new Date(Math.max(...allDates));
-            minDate.setDate(minDate.getDate() - 7);
-            maxDate.setDate(maxDate.getDate() + 7);
-            const totalDays = (maxDate - minDate) / (1000 * 60 * 60 * 24);
+            // Use the memoized and valid minDate/maxDate for calculations
+            const totalDays = (maxDate.getTime() - minDate.getTime()) / (1000 * 60 * 60 * 24);
+            if (totalDays <= 0) return;
+
             const chartWidth = width - margin.left - margin.right;
             const pixelsPerDay = chartWidth / totalDays;
             
@@ -1132,34 +1150,24 @@ function ProjectGanttChartComponent({ projects, width, height, onDateChange, onE
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
         };
-    }, [dragState, onDateChange, onEndDateChange, width, projects, startDateOverrides, endDateOverrides, margin.left, margin.right]);
+    }, [dragState, onDateChange, onEndDateChange, width, minDate, maxDate, margin.left, margin.right]);
 
-    if (!projects || projects.length === 0 || width === 0) return null;
+    if (!projects || projects.length === 0 || width <= 0 || !minDate || !maxDate) {
+        return null;
+    }
 
     const barHeight = 35;
     const barPadding = 15;
     const chartHeight = projects.length * (barHeight + barPadding) + margin.top + margin.bottom;
-
-    const allDates = projects.flatMap(p => [
-        parseDate(p.OriginalStartDate),
-        parseDate(p.DueDate),
-        parseDate(startDateOverrides[p.Project] || p.StartDate),
-        parseDate(endDateOverrides[p.Project] || p.FinishDate)
-    ]);
-    const minDate = new Date(Math.min(...allDates));
-    const maxDate = new Date(Math.max(...allDates));
-
-    minDate.setDate(minDate.getDate() - 7);
-    maxDate.setDate(maxDate.getDate() + 7);
-
-    const totalDays = (maxDate - minDate) / (1000 * 60 * 60 * 24);
+    
+    const totalDays = (maxDate.getTime() - minDate.getTime()) / (1000 * 60 * 60 * 24);
     const chartWidth = width - margin.left - margin.right;
     const pixelsPerDay = chartWidth / totalDays;
 
     const getX = (date) => {
         const dateObj = date instanceof Date ? date : parseDate(date);
-        if (!dateObj) return 0;
-        const daysFromStart = (dateObj - minDate) / (1000 * 60 * 60 * 24);
+        if (!dateObj || isNaN(dateObj.getTime())) return 0;
+        const daysFromStart = (dateObj.getTime() - minDate.getTime()) / (1000 * 60 * 60 * 24);
         return margin.left + daysFromStart * pixelsPerDay;
     };
 
@@ -1169,6 +1177,8 @@ function ProjectGanttChartComponent({ projects, width, height, onDateChange, onE
 
         const initialStartDate = parseDate(startDateOverrides[project.Project] || project.OriginalStartDate);
         const initialFinishDate = parseDate(endDateOverrides[project.Project] || project.DueDate);
+
+        if (!initialStartDate || !initialFinishDate) return; // Don't start drag if dates are invalid
 
         setDragState({
             type,
@@ -1205,18 +1215,30 @@ function ProjectGanttChartComponent({ projects, width, height, onDateChange, onE
 
                 {projects.map((p, i) => {
                     const isInteracting = dragState?.project.Project === p.Project;
+                    
                     const planStartDate = parseDate(startDateOverrides[p.Project] || p.OriginalStartDate);
                     const planDueDate = parseDate(endDateOverrides[p.Project] || p.DueDate);
+                    
+                    const actualStartDate = parseDate(p.StartDate);
+                    const actualFinishDate = parseDate(p.FinishDate);
+                    const originalDueDate = parseDate(p.DueDate);
+
+                    if (!planStartDate || !planDueDate) return null; // Don't render bar if plan dates are invalid
+
                     const visualPlanStartDate = isInteracting ? dragState.visualStartDate : planStartDate;
                     const visualPlanDueDate = isInteracting ? dragState.visualFinishDate : planDueDate;
+                    
                     const planStartX = getX(visualPlanStartDate);
                     const planFinishX = getX(visualPlanDueDate);
                     const planBarWidth = Math.max(2, planFinishX - planStartX);
-                    const actualStartX = getX(p.StartDate);
-                    const actualFinishX = getX(p.FinishDate);
-                    const actualBarWidth = Math.max(0, actualFinishX - actualStartX);
+                    
+                    const actualStartX = getX(actualStartDate);
+                    const actualFinishX = getX(actualFinishDate);
+                    const actualBarWidth = (actualStartDate && actualFinishDate) ? Math.max(0, actualFinishX - actualStartX) : 0;
+                    
                     const y = margin.top + i * (barHeight + barPadding);
-                    const isLate = parseDate(p.FinishDate) > parseDate(p.DueDate);
+                    const isLate = actualFinishDate && originalDueDate && actualFinishDate > originalDueDate;
+                    
                     const planDateLabel = `${formatDateForGantt(visualPlanStartDate)} - ${formatDateForGantt(visualPlanDueDate)}`;
                     const textWidthEstimate = planDateLabel.length * 5;
                     const handleWidth = 8;
@@ -1257,14 +1279,16 @@ function ProjectGanttChartComponent({ projects, width, height, onDateChange, onE
                             )}
                             <rect x={planStartX} y={y} width={handleWidth} height={barHeight} onMouseDown={(e) => handleMouseDown(e, p, 'resize-start')} className="fill-transparent cursor-ew-resize" />
                             <rect x={planStartX + planBarWidth - handleWidth} y={y} width={handleWidth} height={barHeight} onMouseDown={(e) => handleMouseDown(e, p, 'resize-end')} className="fill-transparent cursor-ew-resize" />
-                            <line
-                                x1={getX(p.DueDate)}
-                                y1={y - 2}
-                                x2={getX(p.DueDate)}
-                                y2={y + barHeight + 2}
-                                className={`stroke-2 ${isLate ? 'stroke-red-600' : 'stroke-slate-500'}`}
-                            />
-                            <path d={`M ${getX(p.DueDate)} ${y-2} l -3 -3 l 6 0 z`} className={`fill-current ${isLate ? 'text-red-600' : 'text-slate-500'}`} />
+                            {originalDueDate && <>
+                                <line
+                                    x1={getX(originalDueDate)}
+                                    y1={y - 2}
+                                    x2={getX(originalDueDate)}
+                                    y2={y + barHeight + 2}
+                                    className={`stroke-2 ${isLate ? 'stroke-red-600' : 'stroke-slate-500'}`}
+                                />
+                                <path d={`M ${getX(originalDueDate)} ${y-2} l -3 -3 l 6 0 z`} className={`fill-current ${isLate ? 'text-red-600' : 'text-slate-500'}`} />
+                            </>}
                         </g>
                     );
                 })}
@@ -1274,7 +1298,7 @@ function ProjectGanttChartComponent({ projects, width, height, onDateChange, onE
 }
 
 
-// --- Utilization Chart Component (Unchanged) ---
+// --- Utilization Chart Component (FIXED) ---
 function UtilizationLineChartComponent({ data, teams, width, height }) {
     if (!data || data.length === 0 || width === 0 || height === 0) return null;
     let uniqueTeams = [...new Map(teams.map(item => [item['name'], item])).values()];
@@ -1292,7 +1316,10 @@ function UtilizationLineChartComponent({ data, teams, width, height }) {
     const chartWidth = width - margin.left - margin.right;
     const chartHeight = height - margin.top - margin.bottom - legendHeight;
 
-    const allWeeks = data.map(d => parseDate(d.week).getTime());
+    // FIX: Filter out invalid dates before getting timestamps
+    const allWeeks = data.map(d => parseDate(d.week)).filter(Boolean).map(d => d.getTime());
+    if (allWeeks.length === 0) return null;
+
     const minDate = Math.min(...allWeeks);
     const maxDate = Math.max(...allWeeks);
 
@@ -1303,7 +1330,9 @@ function UtilizationLineChartComponent({ data, teams, width, height }) {
 
     const teamData = uniqueTeams.reduce((acc, team, i) => { acc[team.name] = { color: TEAM_COLORS[i % TEAM_COLORS.length], points: [] }; return acc; }, {});
     data.forEach(weekData => {
-        const x = xScale(parseDate(weekData.week).getTime());
+        const weekDate = parseDate(weekData.week);
+        if (!weekDate) return;
+        const x = xScale(weekDate.getTime());
         weekData.teams.forEach(team => { if (teamData[team.name]) { const y = yScale(team.utilization); teamData[team.name].points.push({ x, y }); } });
     });
 
@@ -1318,6 +1347,7 @@ function UtilizationLineChartComponent({ data, teams, width, height }) {
                          {data.map((d,i) => {
                              if(data.length < 10 || i % Math.ceil(data.length / 6) === 0) {
                                  const date = parseDate(d.week);
+                                 if (!date) return null;
                                  return (<text key={d.week} x={xScale(date.getTime())} y="20" textAnchor="middle" className="fill-slate-500">{date.toLocaleDateString(undefined, {month:'short', day:'numeric'})}</text>)
                              } return null;
                          })}
@@ -1332,7 +1362,7 @@ function UtilizationLineChartComponent({ data, teams, width, height }) {
     );
 }
 
-// --- Team Workload Chart Component (Unchanged) ---
+// --- Team Workload Chart Component (FIXED) ---
 function TeamWorkloadChartComponent({ data, teams, width, height }) {
     if (!data || data.length === 0 || width === 0 || height === 0) return null;
     let uniqueTeams = [...new Map(teams.map(item => [item['name'], item])).values()];
@@ -1350,7 +1380,10 @@ function TeamWorkloadChartComponent({ data, teams, width, height }) {
     const chartWidth = width - margin.left - margin.right;
     const chartHeight = height - margin.top - margin.bottom - legendHeight;
 
-    const allWeeks = data.map(d => parseDate(d.week).getTime());
+    // FIX: Filter out invalid dates before getting timestamps
+    const allWeeks = data.map(d => parseDate(d.week)).filter(Boolean).map(d => d.getTime());
+    if (allWeeks.length === 0) return null;
+    
     const minDate = Math.min(...allWeeks);
     const maxDate = Math.max(...allWeeks);
 
@@ -1370,7 +1403,9 @@ function TeamWorkloadChartComponent({ data, teams, width, height }) {
 
     const teamData = uniqueTeams.reduce((acc, team, i) => { acc[team.name] = { color: TEAM_COLORS[i % TEAM_COLORS.length], points: [] }; return acc; }, {});
     data.forEach(weekData => {
-        const x = xScale(parseDate(weekData.week).getTime());
+        const weekDate = parseDate(weekData.week);
+        if (!weekDate) return;
+        const x = xScale(weekDate.getTime());
         weekData.teams.forEach(team => { if (teamData[team.name]) { const y = yScale(parseFloat(team.workloadRatio)); teamData[team.name].points.push({ x, y }); } });
     });
 
@@ -1398,6 +1433,7 @@ function TeamWorkloadChartComponent({ data, teams, width, height }) {
                           {data.map((d,i) => {
                               if(data.length < 10 || i % Math.ceil(data.length / 6) === 0) {
                                   const date = parseDate(d.week);
+                                  if (!date) return null;
                                   return (<text key={d.week} x={xScale(date.getTime())} y="20" textAnchor="middle" className="fill-slate-500">{date.toLocaleDateString(undefined, {month:'short', day:'numeric'})}</text>)
                               } return null;
                           })}
