@@ -114,8 +114,7 @@ export default function App() {
     const [projectTasks, setProjectTasks] = useState([]); 
     const [routingData, setRoutingData] = useState([]);
     const [builderState, setBuilderState] = useState({
-        template: '',
-        projectName: '',
+        selectedTemplates: [],
         store: '',
         startDate: formatDate(new Date()),
         dueDate: formatDate(addDays(new Date(), 14))
@@ -307,10 +306,6 @@ export default function App() {
 
                 setRoutingData(cleanedRoutingData);
                 addLog(`Successfully loaded ${[...new Set(cleanedRoutingData.map(r => r.TemplateName))].length} project templates.`);
-                if (cleanedRoutingData.length > 0 && !builderState.template) {
-                    setBuilderState(prev => ({ ...prev, template: [...new Set(cleanedRoutingData.map(r => r.TemplateName))].sort()[0] }));
-                }
-
             } catch (error) {
                 setError(prev => `${prev} | Could not load routing data. Project builder will be disabled.`);
                 addLog(`Error fetching routing data: ${error.message}`);
@@ -318,7 +313,7 @@ export default function App() {
         };
 
         fetchRemoteData();
-    }, [addLog, builderState.template, robustCsvParse]);
+    }, [addLog, robustCsvParse]);
 
     const simpleCsvUnparse = (data) => {
         if (!data || data.length === 0) return '';
@@ -398,35 +393,59 @@ export default function App() {
         setBuilderState({ ...builderState, [e.target.name]: e.target.value });
     };
     
+    const handleTemplateSelectionChange = (templateName) => {
+        setBuilderState(prev => {
+            const newSelection = new Set(prev.selectedTemplates);
+            if (newSelection.has(templateName)) {
+                newSelection.delete(templateName);
+            } else {
+                newSelection.add(templateName);
+            }
+            return { ...prev, selectedTemplates: Array.from(newSelection) };
+        });
+    };
+
+    const handleSelectAllTemplates = (e) => {
+        if (e.target.checked) {
+            setBuilderState(prev => ({ ...prev, selectedTemplates: projectTemplates }));
+        } else {
+            setBuilderState(prev => ({ ...prev, selectedTemplates: [] }));
+        }
+    };
+
     const handleAddProjectFromBuilder = () => {
-        const { template, projectName, store, startDate, dueDate } = builderState;
-        if (!template || !projectName || !store || !startDate || !dueDate) {
-            setError("Please fill all fields in the Project Builder.");
+        const { selectedTemplates, store, startDate, dueDate } = builderState;
+        if (selectedTemplates.length === 0 || !store || !startDate || !dueDate) {
+            setError("Please select at least one game and fill all fields in the Project Builder.");
             return;
         }
 
-        if (builtProjects.some(p => p.name === projectName)) {
-            setError(`A project with the name "${projectName}" already exists. Please use a unique name.`);
-            return;
-        }
+        const newTasks = [];
+        const currentProjectNames = new Set(builtProjects.map(p => p.name));
 
-        const templateTasks = routingData.filter(r => r.TemplateName === template);
-        if (templateTasks.length === 0) {
-            setError(`Could not find routing information for template: ${template}`);
-            return;
-        }
+        selectedTemplates.forEach(template => {
+            let uniqueName = '';
+            do {
+                const randomNumber = Math.floor(1000 + Math.random() * 9000);
+                uniqueName = `${template} #${randomNumber}`;
+            } while (currentProjectNames.has(uniqueName));
+            
+            currentProjectNames.add(uniqueName);
 
-        const newTasks = templateTasks.map(taskTemplate => ({
-            ...taskTemplate,
-            Project: projectName,
-            Store: store,
-            StartDate: parseDate(startDate),
-            DueDate: parseDate(dueDate),
-        }));
+            const templateTasks = routingData.filter(r => r.TemplateName === template);
+            const tasksForProject = templateTasks.map(taskTemplate => ({
+                ...taskTemplate,
+                Project: uniqueName,
+                Store: store,
+                StartDate: parseDate(startDate),
+                DueDate: parseDate(dueDate),
+            }));
+            newTasks.push(...tasksForProject);
+        });
         
         setProjectTasks(prevTasks => [...prevTasks, ...newTasks]);
         setError('');
-        setBuilderState(prev => ({...prev, projectName: ''}));
+        setBuilderState(prev => ({...prev, selectedTemplates: []}));
     };
 
     const handleRemoveProject = (projectName) => {
@@ -481,7 +500,7 @@ export default function App() {
 
         try {
             addLog("Sending data to scheduling server...");
-            const response = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/schedule', {
+            const response = await fetch('https://production-scheduler-backend-aepw.onrender.com', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -657,15 +676,41 @@ export default function App() {
                     <CollapsibleSection title="Project Builder" icon={Wrench} defaultOpen={true}>
                         <div className="space-y-4">
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                <div><label className="block text-sm font-medium text-slate-600">Project Name</label><input type="text" name="projectName" placeholder="e.g., 01, 09, Reno" value={builderState.projectName} onChange={handleBuilderChange} className={inputStyles}/></div>
-                                <div><label className="block text-sm font-medium text-slate-600">Game Template</label><select name="template" value={builderState.template} onChange={handleBuilderChange} className={inputStyles} disabled={routingData.length === 0}>{projectTemplates.map(t => <option key={t} value={t}>{t}</option>)}</select></div>
-                                <div><label className="block text-sm font-medium text-slate-600">Store</label><input type="text" name="store" placeholder="e.g., Store-A" value={builderState.store} onChange={handleBuilderChange} className={inputStyles}/></div>
+                                <div><label className="block text-sm font-medium text-slate-600">Store Name</label><input type="text" name="store" placeholder="e.g., Store-A" value={builderState.store} onChange={handleBuilderChange} className={inputStyles}/></div>
                                 <div></div>
                                 <div><label className="block text-sm font-medium text-slate-600">Start Date</label><input type="date" name="startDate" value={builderState.startDate} onChange={handleBuilderChange} className={inputStyles}/></div>
                                 <div><label className="block text-sm font-medium text-slate-600">Due Date</label><input type="date" name="dueDate" value={builderState.dueDate} onChange={handleBuilderChange} className={inputStyles}/></div>
                             </div>
+                            
+                            <div className="space-y-2 pt-2">
+                                <label className="block text-sm font-medium text-slate-600">Select Games for Store</label>
+                                <div className="max-h-40 overflow-y-auto border rounded-md p-2 bg-slate-50">
+                                    <div className="flex items-center border-b pb-2 mb-2">
+                                        <input type="checkbox" id="select-all" className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                            checked={projectTemplates.length > 0 && builderState.selectedTemplates.length === projectTemplates.length}
+                                            onChange={handleSelectAllTemplates}
+                                        />
+                                        <label htmlFor="select-all" className="ml-2 block text-sm font-bold text-slate-800">Select All</label>
+                                    </div>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        {projectTemplates.map(template => (
+                                            <div key={template} className="flex items-center py-1">
+                                                <input 
+                                                    id={template} 
+                                                    type="checkbox" 
+                                                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                                    checked={builderState.selectedTemplates.includes(template)}
+                                                    onChange={() => handleTemplateSelectionChange(template)}
+                                                />
+                                                <label htmlFor={template} className="ml-2 block text-sm text-slate-700">{template}</label>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+
                             <button onClick={handleAddProjectFromBuilder} disabled={routingData.length === 0} className="w-full flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 font-semibold disabled:bg-gray-400">
-                                <PlusCircle className="w-5 h-5 mr-2" /> Add Project to Schedule
+                                <PlusCircle className="w-5 h-5 mr-2" /> Add Projects to Schedule
                             </button>
                             {routingData.length === 0 && <p className="text-xs text-center text-yellow-600">Loading routing data or none found. Builder is disabled.</p>}
                         </div>
