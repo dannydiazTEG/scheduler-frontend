@@ -138,6 +138,7 @@ export default function App() {
     const [completedTasks, setCompletedTasks] = useState([]);
     const [simulationProgress, setSimulationProgress] = useState(0);
     const [progressMessage, setProgressMessage] = useState('');
+    const [progressStep, setProgressStep] = useState(''); // New state for progress steps
     const progressIntervalRef = useRef(null);
     
     const utilizationChartContainerRef = useRef(null);
@@ -468,25 +469,11 @@ export default function App() {
             return;
         }
         setIsLoading(true);
+        setProgressStep('checking');
+        setProgressMessage("Checking Snowflake for completed tasks...");
         setSimulationProgress(0);
-        setProgressMessage("Contacting server...");
-        
-        setTimeout(() => {
-            setSimulationProgress(10);
-            setProgressMessage("Preparing data...");
-        }, 200);
 
-        progressIntervalRef.current = setInterval(() => {
-            setSimulationProgress(prev => {
-                if (prev >= 90) {
-                    clearInterval(progressIntervalRef.current);
-                    return 90;
-                }
-                return prev + Math.floor(Math.random() * 5) + 1;
-            });
-            setProgressMessage("Running simulation...");
-        }, 300);
-
+        // Clear previous results
         setFinalSchedule([]);
         setSummaryData({ project: [], store: [] });
         setTeamUtilization([]);
@@ -502,6 +489,29 @@ export default function App() {
         const currentState = JSON.stringify({ params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, startDateOverrides, endDateOverrides, projectTasks });
         setLastRunState(currentState);
         setNeedsRerun(false);
+
+        // Simulate Snowflake check
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        setSimulationProgress(10);
+        
+        // Prepare data step
+        setProgressStep('preparing');
+        setProgressMessage("Preparing data for simulation...");
+        await new Promise(resolve => setTimeout(resolve, 500));
+        setSimulationProgress(30);
+
+        // Simulation step
+        setProgressStep('simulating');
+        setProgressMessage("Running scheduling simulation...");
+        progressIntervalRef.current = setInterval(() => {
+            setSimulationProgress(prev => {
+                if (prev >= 80) {
+                    clearInterval(progressIntervalRef.current);
+                    return 80;
+                }
+                return prev + Math.floor(Math.random() * 3) + 1;
+            });
+        }, 200);
 
         const payload = {
             projectTasks: projectTasks.map(t => ({
@@ -520,6 +530,11 @@ export default function App() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
+
+            clearInterval(progressIntervalRef.current); // Stop simulation progress
+            setSimulationProgress(85);
+            setProgressStep('finalizing');
+            setProgressMessage("Processing results...");
 
             const results = await response.json();
 
@@ -585,8 +600,9 @@ export default function App() {
         } finally {
             clearInterval(progressIntervalRef.current);
             setSimulationProgress(100);
-            setProgressMessage("Finalizing results...");
-            setTimeout(() => setIsLoading(false), 500);
+            setProgressMessage("Schedule complete!");
+            setProgressStep('done');
+            setTimeout(() => setIsLoading(false), 1000);
         }
     }, [projectTasks, params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, addLog, startDateOverrides, endDateOverrides]);
 
@@ -681,6 +697,13 @@ export default function App() {
             {isLoading && (
                 <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 backdrop-blur-sm">
                     <div className="bg-white p-8 rounded-lg shadow-2xl w-full max-w-md">
+                        <div className="flex justify-center items-center mb-4">
+                            {progressStep === 'checking' && <CheckCircle className="w-8 h-8 text-blue-600 animate-pulse" />}
+                            {progressStep === 'preparing' && <Wrench className="w-8 h-8 text-blue-600 animate-spin" />}
+                            {progressStep === 'simulating' && <Play className="w-8 h-8 text-blue-600" />}
+                            {progressStep === 'finalizing' && <Download className="w-8 h-8 text-blue-600" />}
+                            {progressStep === 'done' && <CheckCircle className="w-8 h-8 text-green-600" />}
+                        </div>
                         <h3 className="text-xl font-bold mb-4 text-center text-slate-800">Scheduling in Progress...</h3>
                         <p className="text-sm mb-2 text-slate-600 text-center">{progressMessage} ({simulationProgress}%)</p>
                         <div className="w-full bg-slate-200 rounded-full h-4 overflow-hidden">
@@ -845,7 +868,7 @@ export default function App() {
                         </div>
                     </CollapsibleSection>
 
-                    <CollapsibleSection title="Project Timeline" icon={Trello} defaultOpen={false}>
+                    <CollapsibleSection title="Project Timeline" icon={Trello} defaultOpen={true}>
                         <div className="mb-4 px-1">
                             <label htmlFor="gantt-filter" className="block text-sm font-medium text-slate-600 mb-1">Filter by Job Name</label>
                             <input
