@@ -988,7 +988,7 @@ export default function App() {
                         </div>
                     </CollapsibleSection>
 
-                    <CollapsibleSection title="Team Workload Ratio" icon={Clock} defaultOpen={false}>
+                    <CollapsibleSection title="Team Workload Ratio" icon={Clock} defaultOpen={true}>
                         <div ref={workloadChartContainerRef} className="flex-grow min-h-[24rem] relative">
                             {teamWorkload.length > 0 ? (
                                 <TeamWorkloadChartComponent
@@ -1005,7 +1005,7 @@ export default function App() {
                         </div>
                     </CollapsibleSection>
 
-                    <CollapsibleSection title="Weekly Team Utilization" icon={Users} defaultOpen={false}>
+                    <CollapsibleSection title="Weekly Team Utilization" icon={Users} defaultOpen={true}>
                         <div className="flex justify-end mb-4">
                             <div className="flex items-center space-x-2"><button onClick={()=>setUtilizationView('bar')} className={`p-1 rounded-md ${utilizationView === 'bar' ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-600'}`}><BarChart className="w-5 h-5" /></button><button onClick={()=>setUtilizationView('line')} className={`p-1 rounded-md ${utilizationView === 'line' ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-600'}`}><LineChart className="w-5 h-5" /></button></div>
                         </div>
@@ -1298,116 +1298,221 @@ function ProjectGanttChartComponent({ projects, width, height, onDateChange, onE
 }
 
 
-// --- Utilization Chart Component (FIXED) ---
+// --- Utilization Chart Component (REBUILT WITH INTERACTIVITY) ---
 function UtilizationLineChartComponent({ data, teams, width, height }) {
-    if (!data || data.length === 0 || width === 0 || height === 0) return null;
-    let uniqueTeams = [...new Map(teams.map(item => [item['name'], item])).values()];
+    const [tooltip, setTooltip] = useState(null);
+    const [hoveredTeam, setHoveredTeam] = useState(null);
+    const svgRef = useRef(null);
 
-    uniqueTeams.sort((a, b) => {
-        const indexA = TEAM_SORT_ORDER.indexOf(a.name);
-        const indexB = TEAM_SORT_ORDER.indexOf(b.name);
-        if (indexA === -1) return 1;
-        if (indexB === -1) return -1;
-        return indexA - indexB;
-    });
+    const uniqueTeams = useMemo(() => {
+        const teamSet = new Set(teams.map(t => t.name));
+        const sorted = [...teamSet].sort((a, b) => {
+            const indexA = TEAM_SORT_ORDER.indexOf(a);
+            const indexB = TEAM_SORT_ORDER.indexOf(b);
+            if (indexA === -1) return 1;
+            if (indexB === -1) return -1;
+            return indexA - indexB;
+        });
+        return sorted.map((name, i) => ({ name, color: TEAM_COLORS[i % TEAM_COLORS.length] }));
+    }, [teams]);
+
+    const chartData = useMemo(() => {
+        if (!data || data.length === 0) return { lines: [], points: [], minDate: null, maxDate: null };
+
+        const allWeeks = data.map(d => parseDate(d.week)).filter(Boolean).map(d => d.getTime());
+        if (allWeeks.length === 0) return { lines: [], points: [], minDate: null, maxDate: null };
+
+        const minDate = Math.min(...allWeeks);
+        const maxDate = Math.max(...allWeeks);
+        
+        const teamMap = new Map(uniqueTeams.map(t => [t.name, { ...t, values: [] }]));
+
+        data.forEach(weekData => {
+            const date = parseDate(weekData.week);
+            if (!date) return;
+            weekData.teams.forEach(team => {
+                if (teamMap.has(team.name)) {
+                    teamMap.get(team.name).values.push({
+                        date: date.getTime(),
+                        utilization: team.utilization
+                    });
+                }
+            });
+        });
+
+        const lines = Array.from(teamMap.values()).map(team => ({
+            ...team,
+            values: team.values.sort((a, b) => a.date - b.date)
+        }));
+
+        const points = lines.flatMap(line => line.values.map(v => ({ ...v, name: line.name, color: line.color })));
+
+        return { lines, points, minDate, maxDate };
+    }, [data, uniqueTeams]);
+
+    if (width === 0 || height === 0 || !chartData.minDate) return null;
 
     const legendHeight = 40;
-    const margin = { top: 10, right: 20, bottom: 30, left: 35 };
+    const margin = { top: 20, right: 20, bottom: 50, left: 50 };
     const chartWidth = width - margin.left - margin.right;
     const chartHeight = height - margin.top - margin.bottom - legendHeight;
 
-    // FIX: Filter out invalid dates before getting timestamps
-    const allWeeks = data.map(d => parseDate(d.week)).filter(Boolean).map(d => d.getTime());
-    if (allWeeks.length === 0) return null;
+    const xScale = (date) => margin.left + ((date - chartData.minDate) / (chartData.maxDate - chartData.minDate || 1)) * chartWidth;
+    const yScale = (util) => margin.top + chartHeight - (Math.min(util, 100) / 100) * chartHeight;
 
-    const minDate = Math.min(...allWeeks);
-    const maxDate = Math.max(...allWeeks);
-
-    const maxUtilization = 100;
-
-    const xScale = (date) => margin.left + ((date - minDate) / (maxDate - minDate || 1)) * chartWidth;
-    const yScale = (util) => margin.top + chartHeight - (Math.min(util, maxUtilization) / maxUtilization) * chartHeight;
-
-    const teamData = uniqueTeams.reduce((acc, team, i) => { acc[team.name] = { color: TEAM_COLORS[i % TEAM_COLORS.length], points: [] }; return acc; }, {});
-    data.forEach(weekData => {
-        const weekDate = parseDate(weekData.week);
-        if (!weekDate) return;
-        const x = xScale(weekDate.getTime());
-        weekData.teams.forEach(team => { if (teamData[team.name]) { const y = yScale(team.utilization); teamData[team.name].points.push({ x, y }); } });
-    });
+    const handleMouseLeave = () => {
+        setTooltip(null);
+    };
 
     return (
-        <div className="w-full h-full flex flex-col">
-             <div className="flex-grow">
-                 <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height - legendHeight}`}>
-                     <g className="text-xs" transform={`translate(${margin.left}, 0)`}>
-                         {[0, 25, 50, 75, 100].map(tick => (<g key={tick} transform={`translate(0, ${yScale(tick)})`}><line x2={chartWidth} className="stroke-slate-200" strokeWidth="1"/><text x="-5" y="4" textAnchor="end" className="fill-slate-500">{tick}%</text></g>))}
-                    </g>
-                     <g className="text-xs" transform={`translate(0, ${chartHeight + margin.top})`}>
-                         {data.map((d,i) => {
-                             if(data.length < 10 || i % Math.ceil(data.length / 6) === 0) {
-                                 const date = parseDate(d.week);
-                                 if (!date) return null;
-                                 return (<text key={d.week} x={xScale(date.getTime())} y="20" textAnchor="middle" className="fill-slate-500">{date.toLocaleDateString(undefined, {month:'short', day:'numeric'})}</text>)
-                             } return null;
-                         })}
-                    </g>
-                    {Object.values(teamData).filter(t => t.points.length > 1).map(team => (<path key={team.color} d={`M ${team.points.map(p => `${p.x},${p.y}`).join(' L ')}`} className="fill-none" strokeWidth="2" stroke={team.color} />))}
-                 </svg>
-             </div>
-             <div className="flex-shrink-0 flex flex-wrap justify-center pt-2 gap-x-4 gap-y-1 h-[40px]">
-                 {uniqueTeams.map((team, i) => (<div key={team.name} className="flex items-center text-xs"><div className="w-3 h-3 rounded-sm mr-2" style={{backgroundColor: TEAM_COLORS[i % TEAM_COLORS.length]}}></div><span>{team.name}</span></div>))}
-             </div>
+        <div className="w-full h-full flex flex-col relative" onMouseLeave={handleMouseLeave}>
+            {tooltip && (
+                <div
+                    className="absolute bg-slate-800 text-white text-xs rounded-md p-2 shadow-lg pointer-events-none transition-opacity duration-200 z-10"
+                    style={{ top: tooltip.y - 10, left: tooltip.x + 10, transform: 'translateY(-100%)' }}
+                >
+                    <div className="font-bold">{tooltip.team}</div>
+                    <div>Week: {tooltip.date}</div>
+                    <div>Utilization: {tooltip.utilization}%</div>
+                </div>
+            )}
+            <svg ref={svgRef} width="100%" height="100%" viewBox={`0 0 ${width} ${height - legendHeight}`}>
+                {/* Axes and Gridlines */}
+                <g className="text-xs">
+                    <text x={margin.left - 35} y={margin.top + chartHeight / 2} transform={`rotate(-90, ${margin.left - 35}, ${margin.top + chartHeight / 2})`} textAnchor="middle" className="fill-slate-500">Utilization</text>
+                    <text x={margin.left + chartWidth / 2} y={margin.top + chartHeight + 40} textAnchor="middle" className="fill-slate-500">Week</text>
+                    {[0, 25, 50, 75, 100].map(tick => (
+                        <g key={tick} transform={`translate(0, ${yScale(tick)})`}>
+                            <line x1={margin.left} x2={width - margin.right} className="stroke-slate-200" />
+                            <text x={margin.left - 8} y="4" textAnchor="end" className="fill-slate-500">{tick}%</text>
+                        </g>
+                    ))}
+                    {data.map((d, i) => {
+                         if(data.length < 10 || i % Math.ceil(data.length / 8) === 0) {
+                             const date = parseDate(d.week);
+                             if (!date) return null;
+                             return (<text key={d.week} x={xScale(date.getTime())} y={margin.top + chartHeight + 20} textAnchor="middle" className="fill-slate-500">{date.toLocaleDateString(undefined, {month:'short', day:'numeric'})}</text>)
+                         } return null;
+                    })}
+                </g>
+                {/* Data Lines */}
+                {chartData.lines.map(line => (
+                    <path
+                        key={line.name}
+                        d={`M ${line.values.map(p => `${xScale(p.date)},${yScale(p.utilization)}`).join(' L ')}`}
+                        className="fill-none transition-all duration-200"
+                        strokeWidth={hoveredTeam === line.name ? 4 : 2}
+                        stroke={line.color}
+                        opacity={hoveredTeam && hoveredTeam !== line.name ? 0.2 : 1}
+                    />
+                ))}
+                {/* Data Points for Hovering */}
+                {chartData.points.map((point, i) => (
+                    <circle
+                        key={i}
+                        cx={xScale(point.date)}
+                        cy={yScale(point.utilization)}
+                        r="8"
+                        className="fill-transparent"
+                        onMouseOver={(e) => {
+                            const rect = svgRef.current.getBoundingClientRect();
+                            setTooltip({
+                                x: e.clientX - rect.left,
+                                y: e.clientY - rect.top,
+                                team: point.name,
+                                date: new Date(point.date).toLocaleDateString(),
+                                utilization: point.utilization
+                            });
+                            setHoveredTeam(point.name);
+                        }}
+                    />
+                ))}
+            </svg>
+            <div className="flex-shrink-0 flex flex-wrap justify-center items-center pt-2 gap-x-4 gap-y-1 h-[40px]">
+                {uniqueTeams.map(team => (
+                    <div
+                        key={team.name}
+                        className="flex items-center text-xs cursor-pointer"
+                        onMouseEnter={() => setHoveredTeam(team.name)}
+                        onMouseLeave={() => setHoveredTeam(null)}
+                    >
+                        <div className="w-3 h-3 rounded-sm mr-2" style={{ backgroundColor: team.color }}></div>
+                        <span className={`transition-opacity duration-200 ${hoveredTeam && hoveredTeam !== team.name ? 'opacity-30' : 'opacity-100'}`}>{team.name}</span>
+                    </div>
+                ))}
+            </div>
         </div>
     );
 }
 
-// --- Team Workload Chart Component (FIXED) ---
+// --- Team Workload Chart Component (REBUILT WITH INTERACTIVITY) ---
 function TeamWorkloadChartComponent({ data, teams, width, height }) {
-    if (!data || data.length === 0 || width === 0 || height === 0) return null;
-    let uniqueTeams = [...new Map(teams.map(item => [item['name'], item])).values()];
+    const [tooltip, setTooltip] = useState(null);
+    const [hoveredTeam, setHoveredTeam] = useState(null);
+    const svgRef = useRef(null);
 
-    uniqueTeams.sort((a, b) => {
-        const indexA = TEAM_SORT_ORDER.indexOf(a.name);
-        const indexB = TEAM_SORT_ORDER.indexOf(b.name);
-        if (indexA === -1) return 1;
-        if (indexB === -1) return -1;
-        return indexA - indexB;
-    });
+    const uniqueTeams = useMemo(() => {
+        const teamSet = new Set(teams.map(t => t.name));
+        const sorted = [...teamSet].sort((a, b) => {
+            const indexA = TEAM_SORT_ORDER.indexOf(a);
+            const indexB = TEAM_SORT_ORDER.indexOf(b);
+            if (indexA === -1) return 1;
+            if (indexB === -1) return -1;
+            return indexA - indexB;
+        });
+        return sorted.map((name, i) => ({ name, color: TEAM_COLORS[i % TEAM_COLORS.length] }));
+    }, [teams]);
+
+    const { lines, points, minDate, maxDate, maxWorkloadRatio } = useMemo(() => {
+        if (!data || data.length === 0) return { lines: [], points: [], minDate: null, maxDate: null, maxWorkloadRatio: 125 };
+
+        const allWeeks = data.map(d => parseDate(d.week)).filter(Boolean).map(d => d.getTime());
+        if (allWeeks.length === 0) return { lines: [], points: [], minDate: null, maxDate: null, maxWorkloadRatio: 125 };
+
+        let maxRatio = 125;
+        data.forEach(week => week.teams.forEach(team => {
+            const ratio = parseFloat(team.workloadRatio);
+            if (ratio > maxRatio) maxRatio = ratio;
+        }));
+        maxRatio = Math.ceil(maxRatio / 50) * 50;
+
+        const minDate = Math.min(...allWeeks);
+        const maxDate = Math.max(...allWeeks);
+        
+        const teamMap = new Map(uniqueTeams.map(t => [t.name, { ...t, values: [] }]));
+
+        data.forEach(weekData => {
+            const date = parseDate(weekData.week);
+            if (!date) return;
+            weekData.teams.forEach(team => {
+                if (teamMap.has(team.name)) {
+                    teamMap.get(team.name).values.push({
+                        date: date.getTime(),
+                        workloadRatio: parseFloat(team.workloadRatio)
+                    });
+                }
+            });
+        });
+
+        const lines = Array.from(teamMap.values()).map(team => ({
+            ...team,
+            values: team.values.sort((a, b) => a.date - b.date)
+        }));
+
+        const points = lines.flatMap(line => line.values.map(v => ({ ...v, name: line.name, color: line.color })));
+
+        return { lines, points, minDate, maxDate, maxWorkloadRatio: maxRatio };
+    }, [data, uniqueTeams]);
+
+    if (width === 0 || height === 0 || !minDate) return null;
 
     const legendHeight = 40;
-    const margin = { top: 10, right: 20, bottom: 30, left: 45 };
+    const margin = { top: 20, right: 20, bottom: 50, left: 50 };
     const chartWidth = width - margin.left - margin.right;
     const chartHeight = height - margin.top - margin.bottom - legendHeight;
 
-    // FIX: Filter out invalid dates before getting timestamps
-    const allWeeks = data.map(d => parseDate(d.week)).filter(Boolean).map(d => d.getTime());
-    if (allWeeks.length === 0) return null;
-    
-    const minDate = Math.min(...allWeeks);
-    const maxDate = Math.max(...allWeeks);
-
-    let maxWorkloadRatio = 125; // Start with a minimum of 125%
-    data.forEach(week => {
-        week.teams.forEach(team => {
-            const ratio = parseFloat(team.workloadRatio);
-            if (ratio > maxWorkloadRatio) {
-                maxWorkloadRatio = ratio;
-            }
-        });
-    });
-    maxWorkloadRatio = Math.ceil(maxWorkloadRatio / 50) * 50; // Round up to nearest 50
-
     const xScale = (date) => margin.left + ((date - minDate) / (maxDate - minDate || 1)) * chartWidth;
     const yScale = (percentage) => margin.top + chartHeight - (percentage / maxWorkloadRatio) * chartHeight;
-
-    const teamData = uniqueTeams.reduce((acc, team, i) => { acc[team.name] = { color: TEAM_COLORS[i % TEAM_COLORS.length], points: [] }; return acc; }, {});
-    data.forEach(weekData => {
-        const weekDate = parseDate(weekData.week);
-        if (!weekDate) return;
-        const x = xScale(weekDate.getTime());
-        weekData.teams.forEach(team => { if (teamData[team.name]) { const y = yScale(parseFloat(team.workloadRatio)); teamData[team.name].points.push({ x, y }); } });
-    });
 
     const yAxisTicks = [];
     const tickIncrement = Math.max(25, Math.ceil(maxWorkloadRatio / 5 / 25) * 25);
@@ -1416,35 +1521,83 @@ function TeamWorkloadChartComponent({ data, teams, width, height }) {
     }
 
     return (
-        <div className="w-full h-full flex flex-col">
-             <div className="flex-grow">
-                 <svg width="100%" height="100%" viewBox={`0 0 ${width} ${height - legendHeight}`}>
-                     {/* Y-Axis Ticks and Gridlines */}
-                     <g className="text-xs" transform={`translate(0, 0)`}>
-                         {yAxisTicks.map(tick => (<g key={tick} transform={`translate(0, ${yScale(tick)})`}><line x1={margin.left} x2={width - margin.right} className="stroke-slate-200" strokeWidth="1"/><text x={margin.left - 5} y="4" textAnchor="end" className="fill-slate-500">{tick}%</text></g>))}
+        <div className="w-full h-full flex flex-col relative" onMouseLeave={() => setTooltip(null)}>
+            {tooltip && (
+                <div
+                    className="absolute bg-slate-800 text-white text-xs rounded-md p-2 shadow-lg pointer-events-none transition-opacity duration-200 z-10"
+                    style={{ top: tooltip.y - 10, left: tooltip.x + 10, transform: 'translateY(-100%)' }}
+                >
+                    <div className="font-bold">{tooltip.team}</div>
+                    <div>Week: {tooltip.date}</div>
+                    <div>Workload: {tooltip.workloadRatio.toFixed(0)}%</div>
+                </div>
+            )}
+            <svg ref={svgRef} width="100%" height="100%" viewBox={`0 0 ${width} ${height - legendHeight}`}>
+                <g className="text-xs">
+                    <text x={margin.left - 40} y={margin.top + chartHeight / 2} transform={`rotate(-90, ${margin.left - 40}, ${margin.top + chartHeight / 2})`} textAnchor="middle" className="fill-slate-500">Workload Ratio</text>
+                     <text x={margin.left + chartWidth / 2} y={margin.top + chartHeight + 40} textAnchor="middle" className="fill-slate-500">Week</text>
+                    {yAxisTicks.map(tick => (
+                        <g key={tick} transform={`translate(0, ${yScale(tick)})`}>
+                            <line x1={margin.left} x2={width - margin.right} className="stroke-slate-200" />
+                            <text x={margin.left - 8} y="4" textAnchor="end" className="fill-slate-500">{tick}%</text>
+                        </g>
+                    ))}
+                    <g transform={`translate(0, ${yScale(100)})`}>
+                        <line x1={margin.left} x2={width - margin.right} className="stroke-red-500" strokeWidth="1.5" strokeDasharray="4 2"/>
+                        <text x={margin.left - 8} y="4" textAnchor="end" className="fill-red-500 font-bold">100%</text>
                     </g>
-                     {/* 100% Baseline */}
-                     <g transform={`translate(0, ${yScale(100)})`}>
-                        <line x1={margin.left} x2={width-margin.right} className="stroke-red-500" strokeWidth="1.5" strokeDasharray="4 2"/>
-                        <text x={margin.left - 5} y="4" textAnchor="end" className="fill-red-500 font-bold text-xs">100%</text>
-                     </g>
-                      {/* X-Axis Ticks */}
-                      <g className="text-xs" transform={`translate(0, ${chartHeight + margin.top})`}>
-                          {data.map((d,i) => {
-                              if(data.length < 10 || i % Math.ceil(data.length / 6) === 0) {
-                                  const date = parseDate(d.week);
-                                  if (!date) return null;
-                                  return (<text key={d.week} x={xScale(date.getTime())} y="20" textAnchor="middle" className="fill-slate-500">{date.toLocaleDateString(undefined, {month:'short', day:'numeric'})}</text>)
-                              } return null;
-                          })}
-                     </g>
-                     {/* Data Lines */}
-                     {Object.values(teamData).filter(t => t.points.length > 1).map(team => (<path key={team.color} d={`M ${team.points.map(p => `${p.x},${p.y}`).join(' L ')}`} className="fill-none" strokeWidth="2" stroke={team.color} />))}
-                 </svg>
-             </div>
-             <div className="flex-shrink-0 flex flex-wrap justify-center pt-2 gap-x-4 gap-y-1 h-[40px]">
-                 {uniqueTeams.map((team, i) => (<div key={team.name} className="flex items-center text-xs"><div className="w-3 h-3 rounded-sm mr-2" style={{backgroundColor: TEAM_COLORS[i % TEAM_COLORS.length]}}></div><span>{team.name}</span></div>))}
-             </div>
+                    {data.map((d, i) => {
+                         if(data.length < 10 || i % Math.ceil(data.length / 8) === 0) {
+                             const date = parseDate(d.week);
+                             if (!date) return null;
+                             return (<text key={d.week} x={xScale(date.getTime())} y={margin.top + chartHeight + 20} textAnchor="middle" className="fill-slate-500">{date.toLocaleDateString(undefined, {month:'short', day:'numeric'})}</text>)
+                         } return null;
+                    })}
+                </g>
+                {lines.map(line => (
+                    <path
+                        key={line.name}
+                        d={`M ${line.values.map(p => `${xScale(p.date)},${yScale(p.workloadRatio)}`).join(' L ')}`}
+                        className="fill-none transition-all duration-200"
+                        strokeWidth={hoveredTeam === line.name ? 4 : 2}
+                        stroke={line.color}
+                        opacity={hoveredTeam && hoveredTeam !== line.name ? 0.2 : 1}
+                    />
+                ))}
+                {points.map((point, i) => (
+                    <circle
+                        key={i}
+                        cx={xScale(point.date)}
+                        cy={yScale(point.workloadRatio)}
+                        r="8"
+                        className="fill-transparent"
+                        onMouseOver={(e) => {
+                            const rect = svgRef.current.getBoundingClientRect();
+                            setTooltip({
+                                x: e.clientX - rect.left,
+                                y: e.clientY - rect.top,
+                                team: point.name,
+                                date: new Date(point.date).toLocaleDateString(),
+                                workloadRatio: point.workloadRatio
+                            });
+                            setHoveredTeam(point.name);
+                        }}
+                    />
+                ))}
+            </svg>
+            <div className="flex-shrink-0 flex flex-wrap justify-center items-center pt-2 gap-x-4 gap-y-1 h-[40px]">
+                {uniqueTeams.map(team => (
+                    <div
+                        key={team.name}
+                        className="flex items-center text-xs cursor-pointer"
+                        onMouseEnter={() => setHoveredTeam(team.name)}
+                        onMouseLeave={() => setHoveredTeam(null)}
+                    >
+                        <div className="w-3 h-3 rounded-sm mr-2" style={{ backgroundColor: team.color }}></div>
+                        <span className={`transition-opacity duration-200 ${hoveredTeam && hoveredTeam !== team.name ? 'opacity-30' : 'opacity-100'}`}>{team.name}</span>
+                    </div>
+                ))}
+            </div>
         </div>
     );
 }
