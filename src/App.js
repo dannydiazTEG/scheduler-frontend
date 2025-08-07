@@ -143,6 +143,9 @@ export default function App() {
     const [needsRerun, setNeedsRerun] = useState(false);
     const [ganttFilter, setGanttFilter] = useState('');
     const [completedTasks, setCompletedTasks] = useState([]);
+    const [simulationProgress, setSimulationProgress] = useState(0);
+    const [progressMessage, setProgressMessage] = useState('');
+    const progressIntervalRef = useRef(null);
     
     const utilizationChartContainerRef = useRef(null);
     const [utilizationChartDimensions, setUtilizationChartDimensions] = useState({ width: 0, height: 0 });
@@ -472,6 +475,25 @@ export default function App() {
             return;
         }
         setIsLoading(true);
+        setSimulationProgress(0);
+        setProgressMessage("Contacting server...");
+        
+        setTimeout(() => {
+            setSimulationProgress(10);
+            setProgressMessage("Preparing data...");
+        }, 200);
+
+        progressIntervalRef.current = setInterval(() => {
+            setSimulationProgress(prev => {
+                if (prev >= 90) {
+                    clearInterval(progressIntervalRef.current);
+                    return 90;
+                }
+                return prev + Math.floor(Math.random() * 5) + 1;
+            });
+            setProgressMessage("Running simulation...");
+        }, 300);
+
         setFinalSchedule([]);
         setSummaryData({ project: [], store: [] });
         setTeamUtilization([]);
@@ -560,7 +582,10 @@ export default function App() {
                  addLog(`Error: ${errorMessage}`);
             }
         } finally {
-            setIsLoading(false);
+            clearInterval(progressIntervalRef.current);
+            setSimulationProgress(100);
+            setProgressMessage("Finalizing results...");
+            setTimeout(() => setIsLoading(false), 500);
         }
     }, [projectTasks, params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, addLog]);
 
@@ -656,9 +681,9 @@ export default function App() {
                 <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 backdrop-blur-sm">
                     <div className="bg-white p-8 rounded-lg shadow-2xl w-full max-w-md">
                         <h3 className="text-xl font-bold mb-4 text-center text-slate-800">Scheduling in Progress...</h3>
-                        <p className="text-sm mb-2 text-slate-600 text-center">Contacting server and running simulation...</p>
+                        <p className="text-sm mb-2 text-slate-600 text-center">{progressMessage} ({simulationProgress}%)</p>
                         <div className="w-full bg-slate-200 rounded-full h-4 overflow-hidden">
-                           <div className="bg-blue-600 h-4 rounded-full animate-pulse"></div>
+                           <div className="bg-blue-600 h-4 rounded-full transition-all duration-300" style={{width: `${simulationProgress}%`}}></div>
                         </div>
                     </div>
                 </div>
