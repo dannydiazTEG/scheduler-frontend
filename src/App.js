@@ -500,7 +500,7 @@ export default function App() {
 
         try {
             addLog("Sending data to scheduling server...");
-            const response = await fetch('https://production-scheduler-backend-aepw.onrender.com', {
+            const response = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/schedule', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
