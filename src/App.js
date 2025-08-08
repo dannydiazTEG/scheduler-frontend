@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { PlusCircle, MinusCircle, Upload, Download, Play, XCircle, ChevronDown, ChevronUp, UserPlus, Trash2, Clock, BarChart, LineChart, RefreshCw, Users, GitMerge, DollarSign, Building, Briefcase, Trello, HeartPulse, Lightbulb, Wrench, CheckCircle } from 'lucide-react';
+import { PlusCircle, MinusCircle, Upload, Download, Play, XCircle, ChevronDown, ChevronUp, UserPlus, Trash2, Clock, BarChart, LineChart, RefreshCw, Users, GitMerge, DollarSign, Building, Briefcase, Trello, HeartPulse, Lightbulb, Wrench, CheckCircle, Save } from 'lucide-react';
 
 // Helper function to parse dates, robust to different formats
 const parseDate = (dateStr) => {
@@ -110,7 +110,7 @@ export default function App() {
         selectedTemplates: [],
         store: '',
         startDate: formatDate(new Date()),
-        dueDate: formatDate(addDays(new Date(), 14))
+        dueDate: formatDate(addDays(new Date(), 14)),
     });
 
     const [efficiencyData, setEfficiencyData] = useState({});
@@ -138,8 +138,8 @@ export default function App() {
     const [completedTasks, setCompletedTasks] = useState([]);
     const [simulationProgress, setSimulationProgress] = useState(0);
     const [progressMessage, setProgressMessage] = useState('');
-    const [progressStep, setProgressStep] = useState(''); // New state for progress steps
-    const progressIntervalRef = useRef(null);
+    const [progressStep, setProgressStep] = useState('');
+    const pollingIntervalRef = useRef(null);
     
     const utilizationChartContainerRef = useRef(null);
     const [utilizationChartDimensions, setUtilizationChartDimensions] = useState({ width: 0, height: 0 });
@@ -147,6 +147,7 @@ export default function App() {
     const [workloadChartDimensions, setWorkloadChartDimensions] = useState({ width: 0, height: 0 });
     const ganttChartContainerRef = useRef(null);
     const [ganttChartDimensions, setGanttChartDimensions] = useState({ width: 0, height: 0 });
+    const fileInputRef = useRef(null); // For loading config
 
     const inputStyles = "mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 bg-slate-100";
     const smallInputStyles = "rounded-md border-gray-300 shadow-sm text-sm p-2 bg-slate-100";
@@ -469,8 +470,8 @@ export default function App() {
             return;
         }
         setIsLoading(true);
-        setProgressStep('checking');
-        setProgressMessage("Checking Snowflake for completed tasks...");
+        setProgressStep('starting');
+        setProgressMessage("Initializing schedule...");
         setSimulationProgress(0);
 
         // Clear previous results
@@ -490,29 +491,6 @@ export default function App() {
         setLastRunState(currentState);
         setNeedsRerun(false);
 
-        // Simulate Snowflake check
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        setSimulationProgress(10);
-        
-        // Prepare data step
-        setProgressStep('preparing');
-        setProgressMessage("Preparing data for simulation...");
-        await new Promise(resolve => setTimeout(resolve, 500));
-        setSimulationProgress(30);
-
-        // Simulation step
-        setProgressStep('simulating');
-        setProgressMessage("Running scheduling simulation...");
-        progressIntervalRef.current = setInterval(() => {
-            setSimulationProgress(prev => {
-                if (prev >= 80) {
-                    clearInterval(progressIntervalRef.current);
-                    return 80;
-                }
-                return prev + Math.floor(Math.random() * 3) + 1;
-            });
-        }, 200);
-
         const payload = {
             projectTasks: projectTasks.map(t => ({
                 ...t,
@@ -524,177 +502,193 @@ export default function App() {
         };
 
         try {
-            addLog("Sending data to scheduling server...");
-            const response = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/schedule', {
+            addLog("Sending data to scheduling server to start job...");
+            const startResponse = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/schedule', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
 
-            clearInterval(progressIntervalRef.current); // Stop simulation progress
-            setSimulationProgress(85);
-            setProgressStep('finalizing');
-            setProgressMessage("Processing results...");
-
-            const results = await response.json();
-
-            if (!response.ok) {
-                throw new Error(results.error || `Server responded with status: ${response.status}`);
+            if (startResponse.status !== 202) {
+                const errorResult = await startResponse.json();
+                throw new Error(errorResult.error || 'Failed to start scheduling job.');
             }
 
-            setLogs(results.logs || []);
-            if (results.error) {
-                setError(results.error);
-            }
-            
-            setFinalSchedule(results.finalSchedule || []);
-            
-            const projectSummaryList = (results.projectSummary || []).map(p => {
-                const effectiveDueDateStr = endDateOverrides[p.Project] || p.DueDate;
-                const effectiveDueDate = parseDate(effectiveDueDateStr);
-                const finishDate = parseDate(p.FinishDate);
-                const diffDays = (effectiveDueDate && finishDate)
-                    ? Math.round((effectiveDueDate.getTime() - finishDate.getTime()) / (1000 * 60 * 60 * 24))
-                    : 0;
-                return { ...p, OriginalStartDate: p.StartDate, daysVariance: diffDays };
-            }).sort((a,b) => a.Store.localeCompare(b.Store) || a.Project.localeCompare(b.Project));
+            const { jobId } = await startResponse.json();
+            addLog(`Scheduling job started with ID: ${jobId}`);
 
-            const storeSummaryMap = {};
-            projectSummaryList.forEach(p => {
-                const store = p.Store;
-                const startDate = parseDate(p.StartDate);
-                const finishDate = parseDate(p.FinishDate);
-                const effectiveDueDateStr = endDateOverrides[p.Project] || p.DueDate;
-                const dueDate = parseDate(effectiveDueDateStr);
+            // Start polling for status
+            pollingIntervalRef.current = setInterval(async () => {
+                try {
+                    const statusResponse = await fetch(`https://production-scheduler-backend-aepw.onrender.com/api/schedule/status/${jobId}`);
+                    if (!statusResponse.ok) {
+                        // Handle cases where the status endpoint itself fails
+                        throw new Error(`Status check failed with status: ${statusResponse.status}`);
+                    }
+                    const jobStatus = await statusResponse.json();
 
-                if (!startDate || !finishDate || !dueDate) return;
+                    setProgressMessage(jobStatus.message || 'Processing...');
+                    setSimulationProgress(jobStatus.progress || 0);
+                    setProgressStep(jobStatus.step || 'simulating');
 
-                if (!storeSummaryMap[store]) {
-                    storeSummaryMap[store] = { Store: store, StartDate: startDate, FinishDate: finishDate, DueDate: dueDate };
-                } else {
-                    if (startDate < storeSummaryMap[store].StartDate) storeSummaryMap[store].StartDate = startDate;
-                    if (finishDate > storeSummaryMap[store].FinishDate) storeSummaryMap[store].FinishDate = finishDate;
-                    if (dueDate > storeSummaryMap[store].DueDate) storeSummaryMap[store].DueDate = dueDate;
+                    if (jobStatus.status === 'complete') {
+                        clearInterval(pollingIntervalRef.current);
+                        addLog("Job complete. Processing final results.");
+                        
+                        const results = jobStatus.result;
+                        setLogs(results.logs || []);
+                        if (results.error) setError(results.error);
+                        
+                        setFinalSchedule(results.finalSchedule || []);
+                        
+                        const projectSummaryList = (results.projectSummary || []).map(p => {
+                            const effectiveDueDateStr = endDateOverrides[p.Project] || p.DueDate;
+                            const effectiveDueDate = parseDate(effectiveDueDateStr);
+                            const finishDate = parseDate(p.FinishDate);
+                            const diffDays = (effectiveDueDate && finishDate)
+                                ? Math.round((effectiveDueDate.getTime() - finishDate.getTime()) / (1000 * 60 * 60 * 24))
+                                : 0;
+                            return { ...p, OriginalStartDate: p.StartDate, daysVariance: diffDays };
+                        }).sort((a,b) => a.Store.localeCompare(b.Store) || a.Project.localeCompare(b.Project));
+
+                        const storeSummaryMap = {};
+                        projectSummaryList.forEach(p => {
+                            const store = p.Store;
+                            const startDate = parseDate(p.StartDate);
+                            const finishDate = parseDate(p.FinishDate);
+                            const effectiveDueDateStr = endDateOverrides[p.Project] || p.DueDate;
+                            const dueDate = parseDate(effectiveDueDateStr);
+
+                            if (!startDate || !finishDate || !dueDate) return;
+
+                            if (!storeSummaryMap[store]) {
+                                storeSummaryMap[store] = { Store: store, StartDate: startDate, FinishDate: finishDate, DueDate: dueDate };
+                            } else {
+                                if (startDate < storeSummaryMap[store].StartDate) storeSummaryMap[store].StartDate = startDate;
+                                if (finishDate > storeSummaryMap[store].FinishDate) storeSummaryMap[store].FinishDate = finishDate;
+                                if (dueDate > storeSummaryMap[store].DueDate) storeSummaryMap[store].DueDate = dueDate;
+                            }
+                        });
+                        const storeSummaryList = Object.values(storeSummaryMap).map(s => {
+                            const diffDays = Math.round((s.DueDate.getTime() - s.FinishDate.getTime()) / (1000 * 60 * 60 * 24));
+                            return { ...s, StartDate: formatDate(s.StartDate), FinishDate: formatDate(s.FinishDate), DueDate: formatDate(s.DueDate), daysVariance: diffDays };
+                        }).sort((a, b) => a.Store.localeCompare(b.Store));
+                        
+                        setSummaryData({ project: projectSummaryList, store: storeSummaryList });
+                        setTeamUtilization(results.teamUtilization || []);
+                        setProjectedCompletion(results.projectedCompletion || null);
+                        setWeeklyOutput(results.weeklyOutput || []);
+                        setDailyCompletions(results.dailyCompletions || []);
+                        setTeamWorkload(results.teamWorkload || []);
+                        setRecommendations(results.recommendations || []);
+                        setCompletedTasks(results.completedTasks || []);
+                        
+                        setProgressMessage("Schedule complete!");
+                        setProgressStep('done');
+                        setTimeout(() => setIsLoading(false), 1000);
+
+                    } else if (jobStatus.status === 'error') {
+                        clearInterval(pollingIntervalRef.current);
+                        throw new Error(jobStatus.error || 'The scheduling job failed on the server.');
+                    }
+                } catch (pollError) {
+                    clearInterval(pollingIntervalRef.current);
+                    setError(`Error checking job status: ${pollError.message}`);
+                    setIsLoading(false);
                 }
-            });
-             const storeSummaryList = Object.values(storeSummaryMap).map(s => {
-                const diffDays = Math.round((s.DueDate.getTime() - s.FinishDate.getTime()) / (1000 * 60 * 60 * 24));
-                return { ...s, StartDate: formatDate(s.StartDate), FinishDate: formatDate(s.FinishDate), DueDate: formatDate(s.DueDate), daysVariance: diffDays };
-            }).sort((a, b) => a.Store.localeCompare(b.Store));
-            
-            setSummaryData({ project: projectSummaryList, store: storeSummaryList });
-            setTeamUtilization(results.teamUtilization || []);
-            setProjectedCompletion(results.projectedCompletion || null);
-            setWeeklyOutput(results.weeklyOutput || []);
-            setDailyCompletions(results.dailyCompletions || []);
-            setTeamWorkload(results.teamWorkload || []);
-            setRecommendations(results.recommendations || []);
-            setCompletedTasks(results.completedTasks || []);
+            }, 1500);
 
         } catch (e) {
-            console.error(e);
-            const errorMessage = e.message || "An unknown error occurred.";
-            if (errorMessage.includes("No tasks could be generated")) {
-                addLog("Server Info: All tasks for the submitted projects are already complete or no valid routing was found.");
-                setError('');
-            } else {
-                 setError(`Failed to connect to scheduling server: ${errorMessage}`);
-                 addLog(`Error: ${errorMessage}`);
-            }
-        } finally {
-            clearInterval(progressIntervalRef.current);
-            setSimulationProgress(100);
-            setProgressMessage("Schedule complete!");
-            setProgressStep('done');
-            setTimeout(() => setIsLoading(false), 1000);
+            console.error('Failed to start scheduling engine:', e);
+            setError(`Failed to start scheduling job: ${e.message}`);
+            setIsLoading(false);
         }
     }, [projectTasks, params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, addLog, startDateOverrides, endDateOverrides]);
 
+    // --- CONFIGURATION SAVE/LOAD ---
+    const handleSaveConfig = () => {
+        const config = {
+            teamDefs,
+            params,
+            teamMemberChanges,
+            hybridWorkers,
+            ptoEntries,
+            workHourOverrides,
+        };
+        const dataStr = JSON.stringify(config, null, 2);
+        const blob = new Blob([dataStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.download = 'schedule_config.json';
+        link.href = url;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    };
 
-    const downloadCSV = (type) => {
-        let dataToExport; let filename;
-        if (type === 'schedule') {
-            if (finalSchedule.length === 0) return;
-            dataToExport = finalSchedule.map(row => ({
-                Date: row.Date,
-                Job: row.Project,
-                Store: row.Store,
-                SKU: row.SKU,
-                'SKU Name': row['SKU Name'],
-                Operation: row.Operation,
-                Team: row.Team,
-                TeamMember: row.TeamMember,
-                'Team Member Name': row.TeamMemberName,
-                Order: row.Order,
-                'Task Hours Completed': row['Task Hours Completed'],
-                'Time Spent (Hours)': row['Time Spent (Hours)'],
-                DynamicPriority: Number(row.DynamicPriority?.toFixed(2) || 0),
-                StartDate: formatDate(row.StartDate),
-                DueDate: formatDate(row.DueDate)
-            }));
-            filename = 'master_daily_work_log.csv';
-        } else if (type === 'utilization') {
-             if (teamUtilization.length === 0) return;
-             dataToExport = teamUtilization.flatMap(week => week.teams.map(team => ({ Week: week.week, Team: team.name, WorkedHours: team.worked, CapacityHours: team.capacity, Utilization: team.utilization })));
-             filename = 'weekly_team_utilization.csv';
-        } else if (type === 'completions') {
-            if (dailyCompletions.length === 0) return;
-            dataToExport = dailyCompletions.map(item => ({
-                Date: item.Date,
-                Job: item.Job,
-                Store: item.Store,
-                SKU: item.SKU,
-                'SKU Name': item['SKU Name'],
-                Value: item.Value
-            }));
-            filename = 'daily_completions_report.csv';
-        } else if (type === 'completed_tasks') {
-            if (completedTasks.length === 0) return;
-            dataToExport = completedTasks.map(task => ({
-                Project: task.Project,
-                SKU: task.SKU,
-                Operation: task.Operation,
-                CompletionDate: task.CompletionDate,
-            }));
-            filename = 'completed_tasks_from_snowflake.csv';
-        } else {
+    const handleLoadConfig = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            try {
+                const config = JSON.parse(event.target.result);
+                // Basic validation
+                if (config.teamDefs && config.params) {
+                    setTeamDefs(config.teamDefs);
+                    setParams(config.params);
+                    setTeamMemberChanges(config.teamMemberChanges || []);
+                    setHybridWorkers(config.hybridWorkers || []);
+                    setPtoEntries(config.ptoEntries || []);
+                    setWorkHourOverrides(config.workHourOverrides || []);
+                    addLog("Configuration loaded successfully.");
+                    setError('');
+                } else {
+                    throw new Error("Invalid configuration file structure.");
+                }
+            } catch (err) {
+                console.error("Error loading config:", err);
+                setError("Failed to load or parse the configuration file. Please ensure it's a valid JSON config file.");
+            }
+        };
+        reader.onerror = () => setError(`File reading error: ${reader.error}`);
+        reader.readAsText(file);
+        e.target.value = null; // Reset file input
+    };
+    
+    // --- PROJECT TASKS DOWNLOAD ---
+    const handleDownloadProjects = () => {
+        if (projectTasks.length === 0) {
+            setError("No projects to download.");
+            setTimeout(() => setError(''), 3000);
             return;
         }
 
+        const dataToExport = projectTasks.map(task => ({
+            "Project": task.Project,
+            "Store": task.Store,
+            "SKU": task.SKU,
+            "SKU Name": task['SKU Name'],
+            "Operation": task.Operation,
+            "Order": task.Order,
+            "Estimated Hours": task['Estimated Hours'],
+            "Value": task.Value,
+            "StartDate": formatDate(task.StartDate),
+            "DueDate": formatDate(task.DueDate)
+        }));
+        
         const csv = simpleCsvUnparse(dataToExport);
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-        const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = filename;
-        document.body.appendChild(link); link.click(); document.body.removeChild(link);
-    };
-
-    const downloadSampleCSV = (type) => {
-        let headers, rows, filename;
-        if (type === 'project') {
-            headers = "Project,Store,SKU,SKU Name,Operation,Order,Estimated Hours,Value,StartDate,DueDate";
-            rows = [
-                "Job-001,Store-A,SKU-01-A,Widget A,Carpentry/Woodwork,1,10,1500.00,2025-07-01,2025-07-15",
-                "Job-001,Store-A,SKU-01-A,Widget A,Paint Prep,2,5,1500.00,2025-07-01,2025-07-15",
-            ];
-            filename = 'sample_project_data.csv';
-        } else {
-            headers = "TemplateName,SKU,SKU Name,Operation,Order,Estimated Hours,Value";
-            rows = [
-                "Standard Widget,WIDGET-STD,Standard Widget,Carpentry/Woodwork,1,10,1500.00",
-                "Standard Widget,WIDGET-STD,Standard Widget,Paint Prep,2,5,1500.00",
-                "Standard Widget,WIDGET-STD,Standard Widget,Final Assembly,3,8,1500.00",
-            ];
-            filename = 'sample_routing_data.csv';
-        }
-        
-        const csvContent = [headers, ...rows].join("\n");
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a');
         link.href = URL.createObjectURL(blob);
-        link.download = filename;
+        link.download = 'project_tasks.csv';
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
     };
+
 
     return (
         <div className="bg-slate-50 min-h-screen font-sans text-slate-800">
@@ -716,7 +710,11 @@ export default function App() {
                     </div>
                 </div>
             )}
-            <header className="bg-white shadow-md sticky top-0 z-20"><div className="container mx-auto px-4 sm:px-6 lg:px-8"><div className="flex justify-between items-center py-4"><h1 className="text-2xl font-bold text-slate-900">Production Scheduling Engine v2</h1><div className="flex items-center space-x-4"><div className="relative group"><button disabled={finalSchedule.length === 0 && completedTasks.length === 0} className="flex items-center px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed"><Download className="w-5 h-5 mr-2" />Download Reports</button>
+            <header className="bg-white shadow-md sticky top-0 z-20"><div className="container mx-auto px-4 sm:px-6 lg:px-8"><div className="flex justify-between items-center py-4"><h1 className="text-2xl font-bold text-slate-900">Production Scheduling Engine</h1><div className="flex items-center space-x-4">
+                <button onClick={handleSaveConfig} className="flex items-center px-4 py-2 bg-slate-600 text-white rounded-md hover:bg-slate-700 font-semibold"><Save className="w-5 h-5 mr-2" />Save Config</button>
+                <button onClick={() => fileInputRef.current.click()} className="flex items-center px-4 py-2 bg-slate-600 text-white rounded-md hover:bg-slate-700 font-semibold"><Upload className="w-5 h-5 mr-2" />Load Config</button>
+                <input type="file" ref={fileInputRef} onChange={handleLoadConfig} className="hidden" accept=".json" />
+                <div className="relative group"><button disabled={finalSchedule.length === 0 && completedTasks.length === 0} className="flex items-center px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed"><Download className="w-5 h-5 mr-2" />Download Reports</button>
             <div className="absolute hidden group-hover:block bg-white text-black rounded-md shadow-lg py-1 w-full z-30">
                 <button onClick={() => downloadCSV('schedule')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Full Schedule</button>
                 <button onClick={() => downloadCSV('utilization')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Weekly Utilization</button>
@@ -770,11 +768,18 @@ export default function App() {
                         <div className="mt-6">
                             <div className="flex justify-between items-center">
                                 <h3 className="font-bold text-slate-700">Added Projects ({builtProjects.length})</h3>
-                                {builtProjects.length > 0 && (
-                                    <button onClick={handleClearAllProjects} className="flex items-center text-xs font-semibold text-red-500 hover:text-red-700">
-                                        <XCircle className="w-4 h-4 mr-1"/> Clear All
-                                    </button>
-                                )}
+                                <div className="flex items-center space-x-2">
+                                    {builtProjects.length > 0 && (
+                                         <button onClick={handleDownloadProjects} className="flex items-center text-xs font-semibold text-blue-500 hover:text-blue-700">
+                                            <Download className="w-4 h-4 mr-1"/> Download
+                                        </button>
+                                    )}
+                                    {builtProjects.length > 0 && (
+                                        <button onClick={handleClearAllProjects} className="flex items-center text-xs font-semibold text-red-500 hover:text-red-700">
+                                            <XCircle className="w-4 h-4 mr-1"/> Clear All
+                                        </button>
+                                    )}
+                                </div>
                             </div>
                             {builtProjects.length > 0 ? (
                                 <ul className="mt-2 space-y-2 max-h-40 overflow-y-auto pr-2">
@@ -853,19 +858,20 @@ export default function App() {
                 </div>
 
                 <div className="lg:col-span-2 flex flex-col space-y-6">
-                    <CollapsibleSection title="Recommendations" icon={Lightbulb} defaultOpen={false}>
+                    <CollapsibleSection title="Recommendations" icon={Lightbulb} defaultOpen={true}>
                         <div className="space-y-3">
                             {recommendations.length > 0 ? (
-                                recommendations.map((rec, i) => (
-                                    <div key={i} className="p-3 bg-yellow-100 border-l-4 border-yellow-500 rounded-r-lg">
-                                        <p className="font-semibold text-yellow-800">Overload on {rec.team}</p>
-                                        <p className="text-sm text-yellow-700">
-                                            The {rec.team} team is projected to be over 120% capacity for {rec.weeks.length} consecutive weeks starting {rec.weeks[0]}.
-                                            The main contributors are: <span className="font-semibold">{rec.topProjects.join(', ')}</span>.
-                                            Consider delaying one of these projects to alleviate the bottleneck.
-                                        </p>
-                                    </div>
-                                ))
+                                <>
+                                    {recommendations.map((rec, i) => (
+                                        <div key={i} className="p-3 bg-yellow-100 border-l-4 border-yellow-500 rounded-r-lg">
+                                            <p className="font-semibold text-yellow-800">Overload on {rec.team}</p>
+                                            <p className="text-sm text-yellow-700">
+                                                The {rec.team} team is projected to be over 120% capacity for {rec.weeks.length} consecutive weeks starting {rec.weeks[0]}.
+                                                The main contributors are: <span className="font-semibold">{rec.topProjects.join(', ')}</span>.
+                                            </p>
+                                        </div>
+                                    ))}
+                                </>
                             ) : (
                                 <p className="text-slate-500 text-center py-4">No significant bottlenecks detected. Run the schedule to generate recommendations.</p>
                             )}
