@@ -550,9 +550,12 @@ export default function App() {
             setFinalSchedule(results.finalSchedule || []);
             
             const projectSummaryList = (results.projectSummary || []).map(p => {
-                const dueDate = parseDate(p.DueDate);
+                const effectiveDueDateStr = endDateOverrides[p.Project] || p.DueDate;
+                const effectiveDueDate = parseDate(effectiveDueDateStr);
                 const finishDate = parseDate(p.FinishDate);
-                const diffDays = (dueDate && finishDate) ? Math.round((dueDate.getTime() - finishDate.getTime()) / (1000 * 60 * 60 * 24)) : 0;
+                const diffDays = (effectiveDueDate && finishDate)
+                    ? Math.round((effectiveDueDate.getTime() - finishDate.getTime()) / (1000 * 60 * 60 * 24))
+                    : 0;
                 return { ...p, OriginalStartDate: p.StartDate, daysVariance: diffDays };
             }).sort((a,b) => a.Store.localeCompare(b.Store) || a.Project.localeCompare(b.Project));
 
@@ -561,7 +564,8 @@ export default function App() {
                 const store = p.Store;
                 const startDate = parseDate(p.StartDate);
                 const finishDate = parseDate(p.FinishDate);
-                const dueDate = parseDate(p.DueDate);
+                const effectiveDueDateStr = endDateOverrides[p.Project] || p.DueDate;
+                const dueDate = parseDate(effectiveDueDateStr);
 
                 if (!startDate || !finishDate || !dueDate) return;
 
@@ -1244,7 +1248,6 @@ function ProjectGanttChartComponent({ projects, width, height, onDateChange, onE
                     
                     const actualStartDate = parseDate(p.StartDate);
                     const actualFinishDate = parseDate(p.FinishDate);
-                    const originalDueDate = parseDate(p.DueDate);
 
                     if (!planStartDate || !planDueDate) return null; // Don't render bar if plan dates are invalid
 
@@ -1260,7 +1263,7 @@ function ProjectGanttChartComponent({ projects, width, height, onDateChange, onE
                     const actualBarWidth = (actualStartDate && actualFinishDate) ? Math.max(0, actualFinishX - actualStartX) : 0;
                     
                     const y = margin.top + i * (barHeight + barPadding);
-                    const isLate = actualFinishDate && originalDueDate && actualFinishDate > originalDueDate;
+                    const isLate = actualFinishDate && planDueDate && actualFinishDate > planDueDate;
                     
                     const planDateLabel = `${formatDateForGantt(visualPlanStartDate)} - ${formatDateForGantt(visualPlanDueDate)}`;
                     const textWidthEstimate = planDateLabel.length * 5;
@@ -1302,15 +1305,15 @@ function ProjectGanttChartComponent({ projects, width, height, onDateChange, onE
                             )}
                             <rect x={planStartX} y={y} width={handleWidth} height={barHeight} onMouseDown={(e) => handleMouseDown(e, p, 'resize-start')} className="fill-transparent cursor-ew-resize" />
                             <rect x={planStartX + planBarWidth - handleWidth} y={y} width={handleWidth} height={barHeight} onMouseDown={(e) => handleMouseDown(e, p, 'resize-end')} className="fill-transparent cursor-ew-resize" />
-                            {originalDueDate && <>
+                            {planDueDate && <>
                                 <line
-                                    x1={getX(originalDueDate)}
+                                    x1={getX(planDueDate)}
                                     y1={y - 2}
-                                    x2={getX(originalDueDate)}
+                                    x2={getX(planDueDate)}
                                     y2={y + barHeight + 2}
                                     className={`stroke-2 ${isLate ? 'stroke-red-600' : 'stroke-slate-500'}`}
                                 />
-                                <path d={`M ${getX(originalDueDate)} ${y-2} l -3 -3 l 6 0 z`} className={`fill-current ${isLate ? 'text-red-600' : 'text-slate-500'}`} />
+                                <path d={`M ${getX(planDueDate)} ${y-2} l -3 -3 l 6 0 z`} className={`fill-current ${isLate ? 'text-red-600' : 'text-slate-500'}`} />
                             </>}
                         </g>
                     );
