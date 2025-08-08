@@ -1718,4 +1718,3 @@ function TeamWorkloadChartComponent({ data, teams, width, height }) {
         </div>
     );
 }
-
