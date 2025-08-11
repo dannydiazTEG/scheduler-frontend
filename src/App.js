@@ -699,13 +699,6 @@ export default function App() {
         let dataToExport; let filename;
         if (type === 'schedule') {
             if (finalSchedule.length === 0) return;
-            // Serialize complex objects into JSON strings for export
-            const initialRosterJSON = JSON.stringify(teamDefs.headcounts);
-            const rosterChangesJSON = JSON.stringify(teamMemberChanges);
-            const hybridWorkersJSON = JSON.stringify(hybridWorkers);
-            const ptoEntriesJSON = JSON.stringify(ptoEntries);
-            const workHourOverridesJSON = JSON.stringify(workHourOverrides);
-
             dataToExport = finalSchedule.map(row => ({
                 Date: row.Date,
                 Job: row.Project,
@@ -721,16 +714,7 @@ export default function App() {
                 'Time Spent (Hours)': row['Time Spent (Hours)'],
                 DynamicPriority: Number(row.DynamicPriority?.toFixed(2) || 0),
                 StartDate: formatDate(row.StartDate),
-                DueDate: formatDate(row.DueDate),
-                ScheduleStartDate: params.startDate,
-                HoursPerDay: params.hoursPerDay,
-                ProductivityAssumption: params.productivityAssumption,
-                Holidays: params.holidays,
-                InitialTeamRoster: initialRosterJSON,
-                TeamRosterChanges: rosterChangesJSON,
-                HybridWorkers: hybridWorkersJSON,
-                PTOEntries: ptoEntriesJSON,
-                WorkHourOverrides: workHourOverridesJSON,
+                DueDate: formatDate(row.DueDate)
             }));
             filename = 'master_daily_work_log.csv';
         } else if (type === 'utilization') {
