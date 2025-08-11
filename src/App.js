@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { PlusCircle, MinusCircle, Upload, Download, Play, XCircle, ChevronDown, ChevronUp, UserPlus, Trash2, Clock, BarChart, LineChart, RefreshCw, Users, GitMerge, DollarSign, Building, Briefcase, Trello, HeartPulse, Lightbulb, Wrench, CheckCircle } from 'lucide-react';
+import { PlusCircle, MinusCircle, Upload, Download, Play, XCircle, ChevronDown, ChevronUp, UserPlus, Trash2, Clock, BarChart, LineChart, RefreshCw, Users, GitMerge, DollarSign, Building, Briefcase, Trello, HeartPulse, Lightbulb, Wrench, CheckCircle, Save } from 'lucide-react';
 
 // Helper function to parse dates, robust to different formats
 const parseDate = (dateStr) => {
@@ -110,7 +110,7 @@ export default function App() {
         selectedTemplates: [],
         store: '',
         startDate: formatDate(new Date()),
-        dueDate: formatDate(addDays(new Date(), 14))
+        dueDate: formatDate(addDays(new Date(), 14)),
     });
 
     const [efficiencyData, setEfficiencyData] = useState({});
@@ -138,7 +138,7 @@ export default function App() {
     const [completedTasks, setCompletedTasks] = useState([]);
     const [simulationProgress, setSimulationProgress] = useState(0);
     const [progressMessage, setProgressMessage] = useState('');
-    const [progressStep, setProgressStep] = useState(''); // New state for progress steps
+    const [progressStep, setProgressStep] = useState('');
     const progressIntervalRef = useRef(null);
     
     const utilizationChartContainerRef = useRef(null);
@@ -147,6 +147,7 @@ export default function App() {
     const [workloadChartDimensions, setWorkloadChartDimensions] = useState({ width: 0, height: 0 });
     const ganttChartContainerRef = useRef(null);
     const [ganttChartDimensions, setGanttChartDimensions] = useState({ width: 0, height: 0 });
+    const fileInputRef = useRef(null); // For loading config
 
     const inputStyles = "mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 bg-slate-100";
     const smallInputStyles = "rounded-md border-gray-300 shadow-sm text-sm p-2 bg-slate-100";
@@ -610,6 +611,89 @@ export default function App() {
         }
     }, [projectTasks, params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, addLog, startDateOverrides, endDateOverrides]);
 
+    // --- CONFIGURATION SAVE/LOAD ---
+    const handleSaveConfig = () => {
+        const config = {
+            teamDefs,
+            params,
+            teamMemberChanges,
+            hybridWorkers,
+            ptoEntries,
+            workHourOverrides,
+        };
+        const dataStr = JSON.stringify(config, null, 2);
+        const blob = new Blob([dataStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.download = 'schedule_config.json';
+        link.href = url;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    };
+
+    const handleLoadConfig = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            try {
+                const config = JSON.parse(event.target.result);
+                // Basic validation
+                if (config.teamDefs && config.params) {
+                    setTeamDefs(config.teamDefs);
+                    setParams(config.params);
+                    setTeamMemberChanges(config.teamMemberChanges || []);
+                    setHybridWorkers(config.hybridWorkers || []);
+                    setPtoEntries(config.ptoEntries || []);
+                    setWorkHourOverrides(config.workHourOverrides || []);
+                    addLog("Configuration loaded successfully.");
+                    setError('');
+                } else {
+                    throw new Error("Invalid configuration file structure.");
+                }
+            } catch (err) {
+                console.error("Error loading config:", err);
+                setError("Failed to load or parse the configuration file. Please ensure it's a valid JSON config file.");
+            }
+        };
+        reader.onerror = () => setError(`File reading error: ${reader.error}`);
+        reader.readAsText(file);
+        e.target.value = null; // Reset file input
+    };
+    
+    // --- PROJECT TASKS DOWNLOAD ---
+    const handleDownloadProjects = () => {
+        if (projectTasks.length === 0) {
+            setError("No projects to download.");
+            setTimeout(() => setError(''), 3000);
+            return;
+        }
+
+        const dataToExport = projectTasks.map(task => ({
+            "Project": task.Project,
+            "Store": task.Store,
+            "SKU": task.SKU,
+            "SKU Name": task['SKU Name'],
+            "Operation": task.Operation,
+            "Order": task.Order,
+            "Estimated Hours": task['Estimated Hours'],
+            "Value": task.Value,
+            "StartDate": formatDate(task.StartDate),
+            "DueDate": formatDate(task.DueDate)
+        }));
+        
+        const csv = simpleCsvUnparse(dataToExport);
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'project_tasks.csv';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
 
     const downloadCSV = (type) => {
         let dataToExport; let filename;
@@ -676,7 +760,7 @@ export default function App() {
                 "Job-001,Store-A,SKU-01-A,Widget A,Paint Prep,2,5,1500.00,2025-07-01,2025-07-15",
             ];
             filename = 'sample_project_data.csv';
-        } else {
+        } else { 
             headers = "TemplateName,SKU,SKU Name,Operation,Order,Estimated Hours,Value";
             rows = [
                 "Standard Widget,WIDGET-STD,Standard Widget,Carpentry/Woodwork,1,10,1500.00",
@@ -716,7 +800,11 @@ export default function App() {
                     </div>
                 </div>
             )}
-            <header className="bg-white shadow-md sticky top-0 z-20"><div className="container mx-auto px-4 sm:px-6 lg:px-8"><div className="flex justify-between items-center py-4"><h1 className="text-2xl font-bold text-slate-900">Production Scheduling Engine v2</h1><div className="flex items-center space-x-4"><div className="relative group"><button disabled={finalSchedule.length === 0 && completedTasks.length === 0} className="flex items-center px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed"><Download className="w-5 h-5 mr-2" />Download Reports</button>
+            <header className="bg-white shadow-md sticky top-0 z-20"><div className="container mx-auto px-4 sm:px-6 lg:px-8"><div className="flex justify-between items-center py-4"><h1 className="text-2xl font-bold text-slate-900">Production Scheduling Engine v2.1 (Dev)</h1><div className="flex items-center space-x-4">
+                <button onClick={handleSaveConfig} className="flex items-center px-4 py-2 bg-slate-600 text-white rounded-md hover:bg-slate-700 font-semibold"><Save className="w-5 h-5 mr-2" />Save Config</button>
+                <button onClick={() => fileInputRef.current.click()} className="flex items-center px-4 py-2 bg-slate-600 text-white rounded-md hover:bg-slate-700 font-semibold"><Upload className="w-5 h-5 mr-2" />Load Config</button>
+                <input type="file" ref={fileInputRef} onChange={handleLoadConfig} className="hidden" accept=".json" />
+                <div className="relative group"><button disabled={finalSchedule.length === 0 && completedTasks.length === 0} className="flex items-center px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed"><Download className="w-5 h-5 mr-2" />Download Reports</button>
             <div className="absolute hidden group-hover:block bg-white text-black rounded-md shadow-lg py-1 w-full z-30">
                 <button onClick={() => downloadCSV('schedule')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Full Schedule</button>
                 <button onClick={() => downloadCSV('utilization')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Weekly Utilization</button>
@@ -770,11 +858,18 @@ export default function App() {
                         <div className="mt-6">
                             <div className="flex justify-between items-center">
                                 <h3 className="font-bold text-slate-700">Added Projects ({builtProjects.length})</h3>
-                                {builtProjects.length > 0 && (
-                                    <button onClick={handleClearAllProjects} className="flex items-center text-xs font-semibold text-red-500 hover:text-red-700">
-                                        <XCircle className="w-4 h-4 mr-1"/> Clear All
-                                    </button>
-                                )}
+                                <div className="flex items-center space-x-2">
+                                    {builtProjects.length > 0 && (
+                                         <button onClick={handleDownloadProjects} className="flex items-center text-xs font-semibold text-blue-500 hover:text-blue-700">
+                                             <Download className="w-4 h-4 mr-1"/> Download
+                                        </button>
+                                    )}
+                                    {builtProjects.length > 0 && (
+                                        <button onClick={handleClearAllProjects} className="flex items-center text-xs font-semibold text-red-500 hover:text-red-700">
+                                            <XCircle className="w-4 h-4 mr-1"/> Clear All
+                                        </button>
+                                    )}
+                                </div>
                             </div>
                             {builtProjects.length > 0 ? (
                                 <ul className="mt-2 space-y-2 max-h-40 overflow-y-auto pr-2">
@@ -853,19 +948,20 @@ export default function App() {
                 </div>
 
                 <div className="lg:col-span-2 flex flex-col space-y-6">
-                    <CollapsibleSection title="Recommendations" icon={Lightbulb} defaultOpen={false}>
+                    <CollapsibleSection title="Recommendations" icon={Lightbulb} defaultOpen={true}>
                         <div className="space-y-3">
                             {recommendations.length > 0 ? (
-                                recommendations.map((rec, i) => (
-                                    <div key={i} className="p-3 bg-yellow-100 border-l-4 border-yellow-500 rounded-r-lg">
-                                        <p className="font-semibold text-yellow-800">Overload on {rec.team}</p>
-                                        <p className="text-sm text-yellow-700">
-                                            The {rec.team} team is projected to be over 120% capacity for {rec.weeks.length} consecutive weeks starting {rec.weeks[0]}.
-                                            The main contributors are: <span className="font-semibold">{rec.topProjects.join(', ')}</span>.
-                                            Consider delaying one of these projects to alleviate the bottleneck.
-                                        </p>
-                                    </div>
-                                ))
+                                <>
+                                    {recommendations.map((rec, i) => (
+                                        <div key={i} className="p-3 bg-yellow-100 border-l-4 border-yellow-500 rounded-r-lg">
+                                            <p className="font-semibold text-yellow-800">Overload on {rec.team}</p>
+                                            <p className="text-sm text-yellow-700">
+                                                The {rec.team} team is projected to be over 120% capacity for {rec.weeks.length} consecutive weeks starting {rec.weeks[0]}.
+                                                The main contributors are: <span className="font-semibold">{rec.topProjects.join(', ')}</span>.
+                                            </p>
+                                        </div>
+                                    ))}
+                                </>
                             ) : (
                                 <p className="text-slate-500 text-center py-4">No significant bottlenecks detected. Run the schedule to generate recommendations.</p>
                             )}
