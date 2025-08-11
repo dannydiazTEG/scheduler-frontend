@@ -139,7 +139,7 @@ export default function App() {
     const [simulationProgress, setSimulationProgress] = useState(0);
     const [progressMessage, setProgressMessage] = useState('');
     const [progressStep, setProgressStep] = useState('');
-    const progressIntervalRef = useRef(null);
+    const pollingIntervalRef = useRef(null);
     
     const utilizationChartContainerRef = useRef(null);
     const [utilizationChartDimensions, setUtilizationChartDimensions] = useState({ width: 0, height: 0 });
@@ -470,8 +470,8 @@ export default function App() {
             return;
         }
         setIsLoading(true);
-        setProgressStep('checking');
-        setProgressMessage("Checking Snowflake for completed tasks...");
+        setProgressStep('starting');
+        setProgressMessage("Initializing schedule...");
         setSimulationProgress(0);
 
         // Clear previous results
@@ -491,29 +491,6 @@ export default function App() {
         setLastRunState(currentState);
         setNeedsRerun(false);
 
-        // Simulate Snowflake check
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        setSimulationProgress(10);
-        
-        // Prepare data step
-        setProgressStep('preparing');
-        setProgressMessage("Preparing data for simulation...");
-        await new Promise(resolve => setTimeout(resolve, 500));
-        setSimulationProgress(30);
-
-        // Simulation step
-        setProgressStep('simulating');
-        setProgressMessage("Running scheduling simulation...");
-        progressIntervalRef.current = setInterval(() => {
-            setSimulationProgress(prev => {
-                if (prev >= 80) {
-                    clearInterval(progressIntervalRef.current);
-                    return 80;
-                }
-                return prev + Math.floor(Math.random() * 3) + 1;
-            });
-        }, 200);
-
         const payload = {
             projectTasks: projectTasks.map(t => ({
                 ...t,
@@ -525,89 +502,105 @@ export default function App() {
         };
 
         try {
-            addLog("Sending data to scheduling server...");
-            const response = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/schedule', {
+            addLog("Sending data to scheduling server to start job...");
+            const startResponse = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/schedule', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
 
-            clearInterval(progressIntervalRef.current); // Stop simulation progress
-            setSimulationProgress(85);
-            setProgressStep('finalizing');
-            setProgressMessage("Processing results...");
-
-            const results = await response.json();
-
-            if (!response.ok) {
-                throw new Error(results.error || `Server responded with status: ${response.status}`);
+            if (startResponse.status !== 202) {
+                const errorResult = await startResponse.json();
+                throw new Error(errorResult.error || 'Failed to start scheduling job.');
             }
 
-            setLogs(results.logs || []);
-            if (results.error) {
-                setError(results.error);
-            }
-            
-            setFinalSchedule(results.finalSchedule || []);
-            
-            const projectSummaryList = (results.projectSummary || []).map(p => {
-                const effectiveDueDateStr = endDateOverrides[p.Project] || p.DueDate;
-                const effectiveDueDate = parseDate(effectiveDueDateStr);
-                const finishDate = parseDate(p.FinishDate);
-                const diffDays = (effectiveDueDate && finishDate)
-                    ? Math.round((effectiveDueDate.getTime() - finishDate.getTime()) / (1000 * 60 * 60 * 24))
-                    : 0;
-                return { ...p, OriginalStartDate: p.StartDate, daysVariance: diffDays };
-            }).sort((a,b) => a.Store.localeCompare(b.Store) || a.Project.localeCompare(b.Project));
+            const { jobId } = await startResponse.json();
+            addLog(`Scheduling job started with ID: ${jobId}`);
 
-            const storeSummaryMap = {};
-            projectSummaryList.forEach(p => {
-                const store = p.Store;
-                const startDate = parseDate(p.StartDate);
-                const finishDate = parseDate(p.FinishDate);
-                const effectiveDueDateStr = endDateOverrides[p.Project] || p.DueDate;
-                const dueDate = parseDate(effectiveDueDateStr);
+            // Start polling for status
+            pollingIntervalRef.current = setInterval(async () => {
+                try {
+                    const statusResponse = await fetch(`https://production-scheduler-backend-aepw.onrender.com/api/schedule/status/${jobId}`);
+                    if (!statusResponse.ok) {
+                        throw new Error(`Status check failed with status: ${statusResponse.status}`);
+                    }
+                    const jobStatus = await statusResponse.json();
 
-                if (!startDate || !finishDate || !dueDate) return;
+                    setProgressMessage(jobStatus.message || 'Processing...');
+                    setSimulationProgress(jobStatus.progress || 0);
+                    setProgressStep(jobStatus.step || 'simulating');
 
-                if (!storeSummaryMap[store]) {
-                    storeSummaryMap[store] = { Store: store, StartDate: startDate, FinishDate: finishDate, DueDate: dueDate };
-                } else {
-                    if (startDate < storeSummaryMap[store].StartDate) storeSummaryMap[store].StartDate = startDate;
-                    if (finishDate > storeSummaryMap[store].FinishDate) storeSummaryMap[store].FinishDate = finishDate;
-                    if (dueDate > storeSummaryMap[store].DueDate) storeSummaryMap[store].DueDate = dueDate;
+                    if (jobStatus.status === 'complete') {
+                        clearInterval(pollingIntervalRef.current);
+                        addLog("Job complete. Processing final results.");
+                        
+                        const results = jobStatus.result;
+                        setLogs(results.logs || []);
+                        if (results.error) setError(results.error);
+                        
+                        setFinalSchedule(results.finalSchedule || []);
+                        
+                        const projectSummaryList = (results.projectSummary || []).map(p => {
+                            const effectiveDueDateStr = endDateOverrides[p.Project] || p.DueDate;
+                            const effectiveDueDate = parseDate(effectiveDueDateStr);
+                            const finishDate = parseDate(p.FinishDate);
+                            const diffDays = (effectiveDueDate && finishDate)
+                                ? Math.round((effectiveDueDate.getTime() - finishDate.getTime()) / (1000 * 60 * 60 * 24))
+                                : 0;
+                            return { ...p, OriginalStartDate: p.StartDate, daysVariance: diffDays };
+                        }).sort((a,b) => a.Store.localeCompare(b.Store) || a.Project.localeCompare(b.Project));
+
+                        const storeSummaryMap = {};
+                        projectSummaryList.forEach(p => {
+                            const store = p.Store;
+                            const startDate = parseDate(p.StartDate);
+                            const finishDate = parseDate(p.FinishDate);
+                            const effectiveDueDateStr = endDateOverrides[p.Project] || p.DueDate;
+                            const dueDate = parseDate(effectiveDueDateStr);
+
+                            if (!startDate || !finishDate || !dueDate) return;
+
+                            if (!storeSummaryMap[store]) {
+                                storeSummaryMap[store] = { Store: store, StartDate: startDate, FinishDate: finishDate, DueDate: dueDate };
+                            } else {
+                                if (startDate < storeSummaryMap[store].StartDate) storeSummaryMap[store].StartDate = startDate;
+                                if (finishDate > storeSummaryMap[store].FinishDate) storeSummaryMap[store].FinishDate = finishDate;
+                                if (dueDate > storeSummaryMap[store].DueDate) storeSummaryMap[store].DueDate = dueDate;
+                            }
+                        });
+                        const storeSummaryList = Object.values(storeSummaryMap).map(s => {
+                            const diffDays = Math.round((s.DueDate.getTime() - s.FinishDate.getTime()) / (1000 * 60 * 60 * 24));
+                            return { ...s, StartDate: formatDate(s.StartDate), FinishDate: formatDate(s.FinishDate), DueDate: formatDate(s.DueDate), daysVariance: diffDays };
+                        }).sort((a, b) => a.Store.localeCompare(b.Store));
+                        
+                        setSummaryData({ project: projectSummaryList, store: storeSummaryList });
+                        setTeamUtilization(results.teamUtilization || []);
+                        setProjectedCompletion(results.projectedCompletion || null);
+                        setWeeklyOutput(results.weeklyOutput || []);
+                        setDailyCompletions(results.dailyCompletions || []);
+                        setTeamWorkload(results.teamWorkload || []);
+                        setRecommendations(results.recommendations || []);
+                        setCompletedTasks(results.completedTasks || []);
+                        
+                        setProgressMessage("Schedule complete!");
+                        setProgressStep('done');
+                        setTimeout(() => setIsLoading(false), 1000);
+
+                    } else if (jobStatus.status === 'error') {
+                        clearInterval(pollingIntervalRef.current);
+                        throw new Error(jobStatus.error || 'The scheduling job failed on the server.');
+                    }
+                } catch (pollError) {
+                    clearInterval(pollingIntervalRef.current);
+                    setError(`Error checking job status: ${pollError.message}`);
+                    setIsLoading(false);
                 }
-            });
-             const storeSummaryList = Object.values(storeSummaryMap).map(s => {
-                const diffDays = Math.round((s.DueDate.getTime() - s.FinishDate.getTime()) / (1000 * 60 * 60 * 24));
-                return { ...s, StartDate: formatDate(s.StartDate), FinishDate: formatDate(s.FinishDate), DueDate: formatDate(s.DueDate), daysVariance: diffDays };
-            }).sort((a, b) => a.Store.localeCompare(b.Store));
-            
-            setSummaryData({ project: projectSummaryList, store: storeSummaryList });
-            setTeamUtilization(results.teamUtilization || []);
-            setProjectedCompletion(results.projectedCompletion || null);
-            setWeeklyOutput(results.weeklyOutput || []);
-            setDailyCompletions(results.dailyCompletions || []);
-            setTeamWorkload(results.teamWorkload || []);
-            setRecommendations(results.recommendations || []);
-            setCompletedTasks(results.completedTasks || []);
+            }, 1500);
 
         } catch (e) {
-            console.error(e);
-            const errorMessage = e.message || "An unknown error occurred.";
-            if (errorMessage.includes("No tasks could be generated")) {
-                addLog("Server Info: All tasks for the submitted projects are already complete or no valid routing was found.");
-                setError('');
-            } else {
-                 setError(`Failed to connect to scheduling server: ${errorMessage}`);
-                 addLog(`Error: ${errorMessage}`);
-            }
-        } finally {
-            clearInterval(progressIntervalRef.current);
-            setSimulationProgress(100);
-            setProgressMessage("Schedule complete!");
-            setProgressStep('done');
-            setTimeout(() => setIsLoading(false), 1000);
+            console.error('Failed to start scheduling engine:', e);
+            setError(`Failed to start scheduling job: ${e.message}`);
+            setIsLoading(false);
         }
     }, [projectTasks, params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, addLog, startDateOverrides, endDateOverrides]);
 
