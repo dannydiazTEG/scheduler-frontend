@@ -1417,7 +1417,12 @@ function ProjectGanttChartComponent({ projects, width, height, onDateChange, onE
 function UtilizationLineChartComponent({ data, teams, width, height }) {
     const [tooltip, setTooltip] = useState(null);
     const [hoveredTeam, setHoveredTeam] = useState(null);
+    const [selectedTeam, setSelectedTeam] = useState(null);
     const svgRef = useRef(null);
+
+    const handleLegendClick = (teamName) => {
+        setSelectedTeam(prev => (prev === teamName ? null : teamName));
+    };
 
     const uniqueTeams = useMemo(() => {
         const teamSet = new Set(teams.map(t => t.name));
@@ -1511,16 +1516,22 @@ function UtilizationLineChartComponent({ data, teams, width, height }) {
                     })}
                 </g>
                 {/* Data Lines */}
-                {chartData.lines.map(line => (
-                    <path
-                        key={line.name}
-                        d={`M ${line.values.map(p => `${xScale(p.date)},${yScale(p.utilization)}`).join(' L ')}`}
-                        className="fill-none transition-all duration-200"
-                        strokeWidth={hoveredTeam === line.name ? 4 : 2}
-                        stroke={line.color}
-                        opacity={hoveredTeam && hoveredTeam !== line.name ? 0.2 : 1}
-                    />
-                ))}
+                {chartData.lines.map(line => {
+                    const isSelected = selectedTeam === line.name;
+                    const isHovered = hoveredTeam === line.name;
+                    const isDimmed = selectedTeam && !isSelected;
+
+                    return (
+                        <path
+                            key={line.name}
+                            d={`M ${line.values.map(p => `${xScale(p.date)},${yScale(p.utilization)}`).join(' L ')}`}
+                            className="fill-none transition-all duration-200"
+                            strokeWidth={isSelected || isHovered ? 4 : 2}
+                            stroke={line.color}
+                            opacity={isDimmed ? 0.2 : 1}
+                        />
+                    );
+                })}
                 {/* Data Points for Hovering */}
                 {chartData.points.map((point, i) => (
                     <circle
@@ -1544,17 +1555,22 @@ function UtilizationLineChartComponent({ data, teams, width, height }) {
                 ))}
             </svg>
             <div className="flex-shrink-0 flex flex-wrap justify-center items-center pt-2 gap-x-4 gap-y-1 h-[40px]">
-                {uniqueTeams.map(team => (
-                    <div
-                        key={team.name}
-                        className="flex items-center text-xs cursor-pointer"
-                        onMouseEnter={() => setHoveredTeam(team.name)}
-                        onMouseLeave={() => setHoveredTeam(null)}
-                    >
-                        <div className="w-3 h-3 rounded-sm mr-2" style={{ backgroundColor: team.color }}></div>
-                        <span className={`transition-opacity duration-200 ${hoveredTeam && hoveredTeam !== team.name ? 'opacity-30' : 'opacity-100'}`}>{team.name}</span>
-                    </div>
-                ))}
+                {uniqueTeams.map(team => {
+                    const isSelected = selectedTeam === team.name;
+                    const isDimmed = selectedTeam && !isSelected;
+                    return (
+                        <div
+                            key={team.name}
+                            className="flex items-center text-xs cursor-pointer"
+                            onClick={() => handleLegendClick(team.name)}
+                            onMouseEnter={() => setHoveredTeam(team.name)}
+                            onMouseLeave={() => setHoveredTeam(null)}
+                        >
+                            <div className="w-3 h-3 rounded-sm mr-2" style={{ backgroundColor: team.color }}></div>
+                            <span className={`transition-opacity duration-200 ${isDimmed ? 'opacity-30' : 'opacity-100'} ${isSelected ? 'font-bold' : ''}`}>{team.name}</span>
+                        </div>
+                    )
+                })}
             </div>
         </div>
     );
@@ -1564,7 +1580,12 @@ function UtilizationLineChartComponent({ data, teams, width, height }) {
 function TeamWorkloadChartComponent({ data, teams, width, height }) {
     const [tooltip, setTooltip] = useState(null);
     const [hoveredTeam, setHoveredTeam] = useState(null);
+    const [selectedTeam, setSelectedTeam] = useState(null);
     const svgRef = useRef(null);
+
+    const handleLegendClick = (teamName) => {
+        setSelectedTeam(prev => (prev === teamName ? null : teamName));
+    };
 
     const uniqueTeams = useMemo(() => {
         const teamSet = new Set(teams.map(t => t.name));
@@ -1669,16 +1690,22 @@ function TeamWorkloadChartComponent({ data, teams, width, height }) {
                          } return null;
                     })}
                 </g>
-                {lines.map(line => (
-                    <path
-                        key={line.name}
-                        d={`M ${line.values.map(p => `${xScale(p.date)},${yScale(p.workloadRatio)}`).join(' L ')}`}
-                        className="fill-none transition-all duration-200"
-                        strokeWidth={hoveredTeam === line.name ? 4 : 2}
-                        stroke={line.color}
-                        opacity={hoveredTeam && hoveredTeam !== line.name ? 0.2 : 1}
-                    />
-                ))}
+                {lines.map(line => {
+                    const isSelected = selectedTeam === line.name;
+                    const isHovered = hoveredTeam === line.name;
+                    const isDimmed = selectedTeam && !isSelected;
+
+                    return (
+                        <path
+                            key={line.name}
+                            d={`M ${line.values.map(p => `${xScale(p.date)},${yScale(p.workloadRatio)}`).join(' L ')}`}
+                            className="fill-none transition-all duration-200"
+                            strokeWidth={isSelected || isHovered ? 4 : 2}
+                            stroke={line.color}
+                            opacity={isDimmed ? 0.2 : 1}
+                        />
+                    );
+                })}
                 {points.map((point, i) => (
                     <circle
                         key={i}
@@ -1701,17 +1728,22 @@ function TeamWorkloadChartComponent({ data, teams, width, height }) {
                 ))}
             </svg>
             <div className="flex-shrink-0 flex flex-wrap justify-center items-center pt-2 gap-x-4 gap-y-1 h-[40px]">
-                {uniqueTeams.map(team => (
-                    <div
-                        key={team.name}
-                        className="flex items-center text-xs cursor-pointer"
-                        onMouseEnter={() => setHoveredTeam(team.name)}
-                        onMouseLeave={() => setHoveredTeam(null)}
-                    >
-                        <div className="w-3 h-3 rounded-sm mr-2" style={{ backgroundColor: team.color }}></div>
-                        <span className={`transition-opacity duration-200 ${hoveredTeam && hoveredTeam !== team.name ? 'opacity-30' : 'opacity-100'}`}>{team.name}</span>
-                    </div>
-                ))}
+                {uniqueTeams.map(team => {
+                    const isSelected = selectedTeam === team.name;
+                    const isDimmed = selectedTeam && !isSelected;
+                    return (
+                        <div
+                            key={team.name}
+                            className="flex items-center text-xs cursor-pointer"
+                            onClick={() => handleLegendClick(team.name)}
+                            onMouseEnter={() => setHoveredTeam(team.name)}
+                            onMouseLeave={() => setHoveredTeam(null)}
+                        >
+                            <div className="w-3 h-3 rounded-sm mr-2" style={{ backgroundColor: team.color }}></div>
+                            <span className={`transition-opacity duration-200 ${isDimmed ? 'opacity-30' : 'opacity-100'} ${isSelected ? 'font-bold' : ''}`}>{team.name}</span>
+                        </div>
+                    )
+                })}
             </div>
         </div>
     );
