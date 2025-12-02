@@ -463,7 +463,127 @@ export default function App() {
         setProjectFileName('');
         setError('');
     };
+const handleClearAllProjects = () => {
+        setProjectTasks([]);
+        setProjectFileName('');
+        setError('');
+    };
 
+    // 👇 ADD THESE NEW HANDLER FUNCTIONS HERE 👇
+    const handleOptimizationConfigChange = (field, value) => {
+        setOptimizationConfig(prev => ({ ...prev, [field]: value }));
+    };
+
+    const handleMinHeadcountChange = (team, value) => {
+        setMinHeadcount(prev => ({ ...prev, [team]: parseFloat(value) || 0 }));
+    };
+
+    const handleMaxHeadcountChange = (team, value) => {
+        setMaxHeadcount(prev => ({ ...prev, [team]: parseFloat(value) || 0 }));
+    };
+
+    const runResourceOptimizer = async () => {
+        if (projectTasks.length === 0) {
+            setError("No project data loaded. Use the Project Builder or upload a CSV.");
+            return;
+        }
+
+        setIsOptimizing(true);
+        setOptimizationResults(null);
+        setError('');
+
+        const payload = {
+            projectTasks: projectTasks.map(t => ({
+                ...t,
+                StartDate: formatDate(t.StartDate),
+                DueDate: formatDate(t.DueDate),
+            })),
+            params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides,
+            hybridWorkers, efficiencyData, teamMemberNameMap, startDateOverrides, endDateOverrides,
+            optimizationConfig: {
+                ...optimizationConfig,
+                minHeadcount,
+                maxHeadcount
+            }
+        };
+
+        try {
+            addLog("Sending data to optimizer...");
+            const startResponse = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/optimize', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (startResponse.status !== 202) {
+                const errorResult = await startResponse.json();
+                throw new Error(errorResult.error || 'Failed to start optimization job.');
+            }
+
+            const { jobId } = await startResponse.json();
+            addLog(`Optimization job started with ID: ${jobId}`);
+
+            const pollInterval = setInterval(async () => {
+                try {
+                    const statusResponse = await fetch(`https://production-scheduler-backend-aepw.onrender.com/api/schedule/status/${jobId}`);
+                    if (!statusResponse.ok) throw new Error(`Status check failed`);
+                    
+                    const jobStatus = await statusResponse.json();
+
+                    if (jobStatus.status === 'complete') {
+                        clearInterval(pollInterval);
+                        const results = jobStatus.result;
+                        
+                        setOptimizationResults(results);
+                        setLogs(results.logs || []);
+                        
+                        if (!results.success) {
+                            setError(`Optimization found partial solution. ${results.remainingGaps?.length || 0} projects still miss targets.`);
+                        }
+                        
+                        setIsOptimizing(false);
+                    } else if (jobStatus.status === 'error') {
+                        clearInterval(pollInterval);
+                        throw new Error(jobStatus.error || 'Optimization failed');
+                    }
+                } catch (pollError) {
+                    clearInterval(pollInterval);
+                    setError(`Error during optimization: ${pollError.message}`);
+                    setIsOptimizing(false);
+                }
+            }, 2000);
+
+        } catch (e) {
+            console.error('Failed to start optimizer:', e);
+            setError(`Failed to start optimization: ${e.message}`);
+            setIsOptimizing(false);
+        }
+    };
+
+    const applyOptimizedResources = () => {
+        if (!optimizationResults || !optimizationResults.optimizedTeamDefs) return;
+        
+        setTeamDefs(optimizationResults.optimizedTeamDefs);
+        setFinalSchedule(optimizationResults.schedule.finalSchedule || []);
+        setSummaryData({
+            project: optimizationResults.schedule.projectSummary || [],
+            store: []
+        });
+        setTeamUtilization(optimizationResults.schedule.teamUtilization || []);
+        setTeamWorkload(optimizationResults.schedule.teamWorkload || []);
+        
+        setOptimizationResults(null);
+        setError('');
+        addLog("Applied optimized resource configuration.");
+    };
+    // 👆 END NEW HANDLER FUNCTIONS 👆
+
+    const runSchedulingEngine = useCallback(async () => {
+        if (projectTasks.length === 0) {
+            setError("No project data loaded. Use the Project Builder or upload a CSV.");
+            return;
+        }
+        // ... existing runSchedulingEngine code ...
     const runSchedulingEngine = useCallback(async () => {
         if (projectTasks.length === 0) {
             setError("No project data loaded. Use the Project Builder or upload a CSV.");
