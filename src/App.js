@@ -141,6 +141,22 @@ export default function App() {
     const [progressStep, setProgressStep] = useState('');
     const pollingIntervalRef = useRef(null);
     
+     // 👇 ADD THESE NEW STATE VARIABLES HERE 👇
+    const [optimizationConfig, setOptimizationConfig] = useState({
+        targetDeadlineBuffer: 3,
+        maxIterations: 15,
+        budgetLimit: 100000,
+        allowHiring: true,
+        allowOvertime: false,
+        maxOvertimeHours: 2,
+        costPerHour: 25,
+    });
+    const [minHeadcount, setMinHeadcount] = useState({});
+    const [maxHeadcount, setMaxHeadcount] = useState({});
+    const [optimizationResults, setOptimizationResults] = useState(null);
+    const [isOptimizing, setIsOptimizing] = useState(false);
+  // 👆 END NEW STATE VARIABLES 👆
+
     const utilizationChartContainerRef = useRef(null);
     const [utilizationChartDimensions, setUtilizationChartDimensions] = useState({ width: 0, height: 0 });
     const workloadChartContainerRef = useRef(null);
@@ -196,6 +212,19 @@ export default function App() {
         }
     }, [params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, startDateOverrides, endDateOverrides, projectTasks, lastRunState]);
 
+        // 👇 ADD THIS NEW useEffect HERE 👇
+    useEffect(() => {
+        const newMin = {};
+        const newMax = {};
+        teamDefs.headcounts.forEach(team => {
+            newMin[team.name] = Math.floor(team.count * 0.5);
+            newMax[team.name] = Math.ceil(team.count * 2);
+        });
+        setMinHeadcount(newMin);
+        setMaxHeadcount(newMax);
+    }, [teamDefs]);
+    // 👆 END NEW useEffect 👆
+    
     useEffect(() => {
         const createResizeHandler = (ref, setDimensions) => () => {
             if (ref.current) {
@@ -458,11 +487,6 @@ export default function App() {
         );
     };
 
-    const handleClearAllProjects = () => {
-        setProjectTasks([]);
-        setProjectFileName('');
-        setError('');
-    };
 const handleClearAllProjects = () => {
         setProjectTasks([]);
         setProjectFileName('');
@@ -1006,7 +1030,195 @@ const handleClearAllProjects = () => {
                             )}
                         </div>
                     </CollapsibleSection>
+                    <CollapsibleSection title="Resource Optimizer" icon={Lightbulb} defaultOpen={false}>
+    <div className="space-y-4">
+        <div className="p-3 bg-blue-50 rounded-md border border-blue-200">
+            <p className="text-sm text-blue-800">
+                <strong>Goal-Seeking Mode:</strong> The optimizer will automatically adjust team sizes to meet your target deadlines within budget constraints.
+            </p>
+        </div>
 
+        {/* Optimization Goal */}
+        <div>
+            <label className="block text-sm font-medium text-slate-600 mb-1">
+                Target Deadline Buffer (days)
+            </label>
+            <input
+                type="number"
+                value={optimizationConfig.targetDeadlineBuffer}
+                onChange={(e) => handleOptimizationConfigChange('targetDeadlineBuffer', e.target.value)}
+                className={inputStyles}
+                placeholder="e.g., 3"
+            />
+            <p className="text-xs text-slate-500 mt-1">
+                Projects should finish this many days before their due date
+            </p>
+        </div>
+
+        {/* Budget Constraint */}
+        <div>
+            <label className="block text-sm font-medium text-slate-600 mb-1">
+                Maximum Additional Budget ($)
+            </label>
+            <input
+                type="number"
+                value={optimizationConfig.budgetLimit}
+                onChange={(e) => handleOptimizationConfigChange('budgetLimit', e.target.value)}
+                className={inputStyles}
+                placeholder="e.g., 100000"
+            />
+        </div>
+
+        {/* Cost Parameters */}
+        <div className="grid grid-cols-2 gap-4">
+            <div>
+                <label className="block text-sm font-medium text-slate-600 mb-1">
+                    Base Hourly Rate ($)
+                </label>
+                <input
+                    type="number"
+                    value={optimizationConfig.costPerHour}
+                    onChange={(e) => handleOptimizationConfigChange('costPerHour', e.target.value)}
+                    className={inputStyles}
+                />
+            </div>
+            <div>
+                <label className="block text-sm font-medium text-slate-600 mb-1">
+                    Max Iterations
+                </label>
+                <input
+                    type="number"
+                    value={optimizationConfig.maxIterations}
+                    onChange={(e) => handleOptimizationConfigChange('maxIterations', e.target.value)}
+                    className={inputStyles}
+                />
+            </div>
+        </div>
+
+        {/* Team Constraints */}
+        <div>
+            <h3 className="font-bold text-slate-700 mb-2">Team Size Constraints</h3>
+            <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
+                {teamDefs.headcounts.map((team) => (
+                    <div key={team.id} className="grid grid-cols-[120px_1fr_1fr] gap-2 items-center">
+                        <span className="text-sm font-medium text-slate-700">{team.name}</span>
+                        <input
+                            type="number"
+                            step="0.5"
+                            value={minHeadcount[team.name] || 0}
+                            onChange={(e) => handleMinHeadcountChange(team.name, e.target.value)}
+                            className={`${smallInputStyles} text-center`}
+                            placeholder="Min"
+                        />
+                        <input
+                            type="number"
+                            step="0.5"
+                            value={maxHeadcount[team.name] || 0}
+                            onChange={(e) => handleMaxHeadcountChange(team.name, e.target.value)}
+                            className={`${smallInputStyles} text-center`}
+                            placeholder="Max"
+                        />
+                    </div>
+                ))}
+            </div>
+        </div>
+
+        {/* Allowed Adjustments */}
+        <div>
+            <h3 className="font-bold text-slate-700 mb-2">Allowed Adjustments</h3>
+            <label className="flex items-center text-sm">
+                <input
+                    type="checkbox"
+                    checked={optimizationConfig.allowHiring}
+                    onChange={(e) => handleOptimizationConfigChange('allowHiring', e.target.checked)}
+                    className="mr-2"
+                />
+                Allow hiring permanent staff
+            </label>
+        </div>
+
+        {/* Run Optimizer Button */}
+        <button
+            onClick={runResourceOptimizer}
+            disabled={isOptimizing || projectTasks.length === 0}
+            className="w-full flex items-center justify-center px-4 py-3 bg-purple-600 text-white rounded-md hover:bg-purple-700 font-semibold disabled:bg-gray-400 disabled:cursor-not-allowed"
+        >
+            {isOptimizing ? (
+                <>
+                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Optimizing...
+                </>
+            ) : (
+                <>
+                    <Lightbulb className="w-5 h-5 mr-2" />
+                    Find Optimal Resources
+                </>
+            )}
+        </button>
+
+        {/* Results Display */}
+        {optimizationResults && (
+            <div className={`mt-4 p-4 rounded-lg border-2 ${optimizationResults.success ? 'bg-green-50 border-green-500' : 'bg-yellow-50 border-yellow-500'}`}>
+                <h3 className={`font-bold text-lg mb-3 ${optimizationResults.success ? 'text-green-800' : 'text-yellow-800'}`}>
+                    {optimizationResults.success 
+                        ? "✓ Solution Found!" 
+                        : "⚠ Partial Solution Found"}
+                </h3>
+
+                {optimizationResults.changes && optimizationResults.changes.length > 0 && (
+                    <div className="mb-3">
+                        <h4 className="font-semibold text-slate-800 mb-2">Recommended Changes:</h4>
+                        <div className="space-y-2">
+                            {optimizationResults.changes.map((change, idx) => (
+                                <div key={idx} className="text-sm bg-white p-3 rounded border">
+                                    <div className="font-medium text-slate-800">
+                                        • {change.description}
+                                    </div>
+                                    <div className="text-slate-600 text-xs mt-1">
+                                        Cost: ${change.cost.toLocaleString()} | {change.estimatedImpact}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                <div className="mt-3 pt-3 border-t border-slate-300">
+                    <div className="grid grid-cols-2 gap-4 text-sm mb-3">
+                        <div>
+                            <span className="text-slate-600">Total Additional Cost:</span>
+                            <div className="font-bold text-lg text-slate-800">
+                                ${optimizationResults.totalCost?.toLocaleString() || '0'}
+                            </div>
+                        </div>
+                        <div>
+                            <span className="text-slate-600">Iterations:</span>
+                            <div className="font-bold text-lg text-slate-800">
+                                {optimizationResults.iterations || 0}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    {!optimizationResults.success && optimizationResults.remainingGaps && (
+                        <div className="text-sm text-yellow-700 mb-3">
+                            {optimizationResults.remainingGaps.length} projects still miss target deadline
+                        </div>
+                    )}
+
+                    <button
+                        onClick={applyOptimizedResources}
+                        className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 font-semibold"
+                    >
+                        Apply These Changes & View Schedule
+                    </button>
+                </div>
+            </div>
+        )}
+    </div>
+</CollapsibleSection>
                     <CollapsibleSection title="Add Projects from File" defaultOpen={false}>
                         <div className="space-y-4">
                             <p className="text-xs text-center text-slate-500">Use this to add unique projects (e.g., renovations) from a CSV file. This will append to, not replace, the projects added above.</p>
