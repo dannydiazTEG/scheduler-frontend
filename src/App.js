@@ -36,17 +36,19 @@ const addDays = (date, days) => {
 
 
 const TEAM_COLORS = ['#3b82f6', '#000000', '#f97316', '#8b5cf6', '#10b981', '#ef4444', '#f59e0b', '#826c60', '#6366f1', '#d946ef', '#8b4513'];
-const TEAM_SORT_ORDER = ['CNC', 'Metal', 'Scenic', 'Paint', 'Carpentry', 'Assembly', 'Tech', 'Hybrid'];
+// UPDATED: Added Receiving and QC to the sort order
+const TEAM_SORT_ORDER = ['Receiving', 'CNC', 'Metal', 'Scenic', 'Paint', 'Carpentry', 'Assembly', 'Tech', 'QC', 'Hybrid'];
 
 const EFFICIENCY_DATA_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vT-velZ6evgYWuTWpEnd6_NWzlK8hHt02sTOoYU0CrAPY9P3HCrgzFkQTCI84j2WF9_p_wef7ef-7ll/pub?gid=0&single=true&output=csv';
 const ROUTING_DATA_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTTmWdo7GyGwrG1iru8KBk166ndwV802lg3slbcrgekwdLXWWb9WF-i0snEipFq-AMVMTNH9qUWxHH_/pub?gid=1072114065&single=true&output=csv';
 
 // Default state values
 const createDefaultTeamDefs = () => {
+    // UPDATED: Added Receiving and QC headcounts and mappings
     const headcounts = [
         { id: 1, name: 'Paint', count: 9 }, { id: 2, name: 'Scenic', count: 4 }, { id: 3, name: 'CNC', count: 3 },
         { id: 4, name: 'Metal', count: 1 }, { id: 5, name: 'Carpentry', count: 9 }, { id: 6, name: 'Assembly', count: 4 },
-        { id: 7, name: 'Tech', count: 4 },
+        { id: 7, name: 'Tech', count: 4 }, { id: 8, name: 'Receiving', count: 2 }, { id: 9, name: 'QC', count: 2 },
     ];
     headcounts.sort((a, b) => {
         const indexA = TEAM_SORT_ORDER.indexOf(a.name);
@@ -64,6 +66,9 @@ const createDefaultTeamDefs = () => {
             { id: 5, team: 'CNC', operation: 'CNC Operation' }, { id: 6, team: 'Metal', operation: 'Metal Fabrication' },
             { id: 7, team: 'Carpentry', operation: 'Carpentry/Woodwork' }, { id: 8, team: 'Assembly', operation: 'Final Assembly' },
             { id: 9, team: 'Tech', operation: 'Tech' }, { id: 10, team: 'Tech', operation: 'Tech Prep' },
+            // New Mappings
+            { id: 11, team: 'Receiving', operation: 'Receiving' }, 
+            { id: 12, team: 'QC', operation: 'Quality Review / Testing' },
         ],
     };
 };
@@ -71,7 +76,8 @@ const createDefaultTeamDefs = () => {
 const DEFAULT_SCHEDULING_PARAMETERS = {
     startDate: formatDate(new Date()), hoursPerDay: 8.0,
     productivityAssumption: 0.78,
-    teamsToIgnore: 'Unassigned, Quality Review / Testing, Receiving, Wrapping / Packaging, Print',
+    // UPDATED: Removed 'Receiving' and 'Quality Review / Testing' from ignore list
+    teamsToIgnore: 'Unassigned, Wrapping / Packaging, Print',
     holidays: '2025-07-04, 2025-09-01, 2025-11-24, 2025-12-24, 2025-12-25, 2026-01-01',
 };
 
@@ -602,12 +608,6 @@ const handleClearAllProjects = () => {
     };
     // 👆 END NEW HANDLER FUNCTIONS 👆
 
-    const runSchedulingEngine = useCallback(async () => {
-        if (projectTasks.length === 0) {
-            setError("No project data loaded. Use the Project Builder or upload a CSV.");
-            return;
-        }
-        // ... existing runSchedulingEngine code ...
     const runSchedulingEngine = useCallback(async () => {
         if (projectTasks.length === 0) {
             setError("No project data loaded. Use the Project Builder or upload a CSV.");
