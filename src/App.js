@@ -539,7 +539,7 @@ const handleClearAllProjects = () => {
 
         try {
             addLog("Sending data to optimizer...");
-            const startResponse = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/optimize', {
+            const startResponse = await fetch('http://localhost:3001/api/optimize', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -555,7 +555,7 @@ const handleClearAllProjects = () => {
 
             const pollInterval = setInterval(async () => {
                 try {
-                    const statusResponse = await fetch(`https://production-scheduler-backend-aepw.onrender.com/api/schedule/status/${jobId}`);
+                    const statusResponse = await fetch(`http://localhost:3001/api/schedule/status/${jobId}`);
                     if (!statusResponse.ok) throw new Error(`Status check failed`);
                     
                     const jobStatus = await statusResponse.json();
@@ -647,7 +647,7 @@ const handleClearAllProjects = () => {
 
         try {
             addLog("Sending data to scheduling server to start job...");
-            const startResponse = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/schedule', {
+            const startResponse = await fetch('http://localhost:3001/api/schedule', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -664,7 +664,7 @@ const handleClearAllProjects = () => {
             // Start polling for status
             pollingIntervalRef.current = setInterval(async () => {
                 try {
-                    const statusResponse = await fetch(`https://production-scheduler-backend-aepw.onrender.com/api/schedule/status/${jobId}`);
+                    const statusResponse = await fetch(`http://localhost:3001/api/schedule/status/${jobId}`);
                     if (!statusResponse.ok) {
                         throw new Error(`Status check failed with status: ${statusResponse.status}`);
                     }
