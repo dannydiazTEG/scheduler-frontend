@@ -539,7 +539,7 @@ const handleClearAllProjects = () => {
 
         try {
             addLog("Sending data to optimizer...");
-            const startResponse = await fetch('http://localhost:3001/api/optimize', {
+            const startResponse = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/optimize', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -555,7 +555,7 @@ const handleClearAllProjects = () => {
 
             const pollInterval = setInterval(async () => {
                 try {
-                    const statusResponse = await fetch(`http://localhost:3001/api/schedule/status/${jobId}`);
+                    const statusResponse = await fetch(`https://production-scheduler-backend-aepw.onrender.com/api/schedule/status/${jobId}`);
                     if (!statusResponse.ok) throw new Error(`Status check failed`);
                     
                     const jobStatus = await statusResponse.json();
@@ -647,7 +647,7 @@ const handleClearAllProjects = () => {
 
         try {
             addLog("Sending data to scheduling server to start job...");
-            const startResponse = await fetch('http://localhost:3001/api/schedule', {
+            const startResponse = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/schedule', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -664,7 +664,7 @@ const handleClearAllProjects = () => {
             // Start polling for status
             pollingIntervalRef.current = setInterval(async () => {
                 try {
-                    const statusResponse = await fetch(`http://localhost:3001/api/schedule/status/${jobId}`);
+                    const statusResponse = await fetch(`https://production-scheduler-backend-aepw.onrender.com/api/schedule/status/${jobId}`);
                     if (!statusResponse.ok) {
                         throw new Error(`Status check failed with status: ${statusResponse.status}`);
                     }
@@ -780,13 +780,40 @@ const handleClearAllProjects = () => {
                 const config = JSON.parse(event.target.result);
                 // Basic validation
                 if (config.teamDefs && config.params) {
-                    setTeamDefs(config.teamDefs);
+                    // Merge loaded teamDefs with current defaults to preserve new teams (QC, Receiving, etc.)
+                    const defaultTeamDefs = createDefaultTeamDefs();
+
+                    // Merge headcounts: keep loaded values, add any missing new teams from defaults
+                    const loadedHeadcountNames = new Set(config.teamDefs.headcounts.map(h => h.name));
+                    const mergedHeadcounts = [
+                        ...config.teamDefs.headcounts,
+                        ...defaultTeamDefs.headcounts.filter(h => !loadedHeadcountNames.has(h.name))
+                    ];
+
+                    // Merge mappings: keep loaded mappings, add any new mappings from defaults
+                    const loadedMappingKeys = new Set(
+                        config.teamDefs.mapping.map(m => `${m.team}-${m.operation}`)
+                    );
+                    const mergedMappings = [
+                        ...config.teamDefs.mapping,
+                        ...defaultTeamDefs.mapping.filter(
+                            m => !loadedMappingKeys.has(`${m.team}-${m.operation}`)
+                        )
+                    ];
+
+                    // Reassign IDs to ensure uniqueness
+                    mergedMappings.forEach((m, idx) => { m.id = idx + 1; });
+
+                    setTeamDefs({
+                        headcounts: mergedHeadcounts,
+                        mapping: mergedMappings
+                    });
                     setParams(config.params);
                     setTeamMemberChanges(config.teamMemberChanges || []);
                     setHybridWorkers(config.hybridWorkers || []);
                     setPtoEntries(config.ptoEntries || []);
                     setWorkHourOverrides(config.workHourOverrides || []);
-                    addLog("Configuration loaded successfully.");
+                    addLog("Configuration loaded successfully. New teams (if any) have been added.");
                     setError('');
                 } else {
                     throw new Error("Invalid configuration file structure.");
@@ -1242,7 +1269,7 @@ const handleClearAllProjects = () => {
                     </CollapsibleSection>
 
                     <CollapsibleSection title="Scheduling Parameters" defaultOpen={false}>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4"><div><label className="block text-sm font-medium text-slate-600">Start Date</label><input type="date" name="startDate" value={params.startDate} onChange={handleParamChange} className={inputStyles}/></div><div><label className="block text-sm font-medium text-slate-600">Hours per Day</label><input type="number" name="hoursPerDay" value={params.hoursPerDay} onChange={handleParamChange} className={inputStyles}/></div><div><label className="block text-sm font-medium text-slate-600">Productivity Assumption</label><input type="number" step="0.01" name="productivityAssumption" value={params.productivityAssumption} onChange={handleParamChange} className={inputStyles}/></div></div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4"><div><label className="block text-sm font-medium text-slate-600">Start Date</label><input type="date" name="startDate" value={params.startDate} onChange={handleParamChange} className={inputStyles}/></div><div><label className="block text-sm font-medium text-slate-600">Hours per Day</label><input type="number" name="hoursPerDay" value={params.hoursPerDay} onChange={handleParamChange} className={inputStyles}/></div><div><label className="block text-sm font-medium text-slate-600">Productivity Assumption</label><input type="number" step="0.01" name="productivityAssumption" value={params.productivityAssumption} onChange={handleParamChange} className={inputStyles}/></div><div className="sm:col-span-2"><label className="block text-sm font-medium text-slate-600">Teams to Ignore (comma-separated)</label><input type="text" name="teamsToIgnore" value={params.teamsToIgnore} onChange={handleParamChange} placeholder="e.g., Unassigned, Print" className={inputStyles}/></div></div>
                     </CollapsibleSection>
 
                     <CollapsibleSection title="Time Off" defaultOpen={false}>
