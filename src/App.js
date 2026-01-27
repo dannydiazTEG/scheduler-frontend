@@ -76,6 +76,7 @@ const createDefaultTeamDefs = () => {
 const DEFAULT_SCHEDULING_PARAMETERS = {
     startDate: formatDate(new Date()), hoursPerDay: 8.0,
     productivityAssumption: 0.78,
+    globalBuffer: 15 // Global Buffer adeed, default at 15%
     // UPDATED: Removed 'Receiving' and 'Quality Review / Testing' from ignore list
     teamsToIgnore: 'Unassigned, Wrapping / Packaging, Print',
     holidays: '2025-07-04, 2025-09-01, 2025-11-24, 2025-12-24, 2025-12-25, 2026-01-01',
@@ -1269,7 +1270,18 @@ const handleClearAllProjects = () => {
                     </CollapsibleSection>
 
                     <CollapsibleSection title="Scheduling Parameters" defaultOpen={false}>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4"><div><label className="block text-sm font-medium text-slate-600">Start Date</label><input type="date" name="startDate" value={params.startDate} onChange={handleParamChange} className={inputStyles}/></div><div><label className="block text-sm font-medium text-slate-600">Hours per Day</label><input type="number" name="hoursPerDay" value={params.hoursPerDay} onChange={handleParamChange} className={inputStyles}/></div><div><label className="block text-sm font-medium text-slate-600">Productivity Assumption</label><input type="number" step="0.01" name="productivityAssumption" value={params.productivityAssumption} onChange={handleParamChange} className={inputStyles}/></div><div className="sm:col-span-2"><label className="block text-sm font-medium text-slate-600">Teams to Ignore (comma-separated)</label><input type="text" name="teamsToIgnore" value={params.teamsToIgnore} onChange={handleParamChange} placeholder="e.g., Unassigned, Print" className={inputStyles}/></div></div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4"><div><label className="block text-sm font-medium text-slate-600">Start Date</label><input type="date" name="startDate" value={params.startDate} onChange={handleParamChange} className={inputStyles}/></div><div><label className="block text-sm font-medium text-slate-600">Hours per Day</label><input type="number" name="hoursPerDay" value={params.hoursPerDay} onChange={handleParamChange} className={inputStyles}/></div><div><label className="block text-sm font-medium text-slate-600">Productivity Assumption</label><input type="number" step="0.01" name="productivityAssumption" value={params.productivityAssumption} onChange={handleParamChange} className={inputStyles}/></div><div className="sm:col-span-2"><label className="block text-sm font-medium text-slate-600">Teams to Ignore (comma-separated)</label><input type="text" name="teamsToIgnore" value={params.teamsToIgnore} onChange={handleParamChange} placeholder="e.g., Unassigned, Print" className={inputStyles}/></div><div>
+            <label className="block text-sm font-medium text-slate-600">Global Buffer (%)</label>
+            <input
+                type="number"
+                name="globalBuffer"
+                value={params.globalBuffer}
+                onChange={handleParamChange}
+                className={inputStyles}
+                placeholder="e.g., 15"
+            />
+            <p className="text-xs text-slate-500 mt-1">Adds sit time after every task</p>
+        </div></div>
                     </CollapsibleSection>
 
                     <CollapsibleSection title="Time Off" defaultOpen={false}>
