@@ -76,7 +76,7 @@ const createDefaultTeamDefs = () => {
 const DEFAULT_SCHEDULING_PARAMETERS = {
     startDate: formatDate(new Date()), hoursPerDay: 8.0,
     productivityAssumption: 0.78,
-    globalBuffer: 15 // Global Buffer adeed, default at 15%
+    globalBuffer: 15, // Global Buffer added, default at 15%
     // UPDATED: Removed 'Receiving' and 'Quality Review / Testing' from ignore list
     teamsToIgnore: 'Unassigned, Wrapping / Packaging, Print',
     holidays: '2025-07-04, 2025-09-01, 2025-11-24, 2025-12-24, 2025-12-25, 2026-01-01',
@@ -163,6 +163,19 @@ export default function App() {
     const [optimizationResults, setOptimizationResults] = useState(null);
     const [isOptimizing, setIsOptimizing] = useState(false);
   // 👆 END NEW STATE VARIABLES 👆
+
+    // --- Algorithm Comparison State ---
+    const AVAILABLE_ALGORITHMS = [
+        { id: 'baseline', label: 'Baseline (Current)', description: 'Original priority: complexity + due date urgency. Prioritizes heavy SKUs with assembly impact.' },
+        { id: 'earliest-due-date', label: 'Earliest Due Date', description: 'Pure due date urgency, ignores task complexity. Unlike baseline, a small task due soon beats a large task due later.' },
+        { id: 'critical-path', label: 'Critical Path', description: 'Prioritizes tasks that unlock the most downstream work. Unlike baseline, operations near the start of a SKU (e.g. CNC, Carpentry) get higher priority than operations near the end (e.g. Assembly, Tech) because completing them unblocks more teams.' },
+        { id: 'work-leveling', label: 'Work Leveling', description: 'Flattened urgency curve — spreads work evenly, reduces overtime spikes. Unlike baseline, non-urgent tasks are deliberately pushed later to smooth team utilization.' },
+        { id: 'bottleneck-first', label: 'Bottleneck-First', description: 'Identifies the most overloaded team and rushes upstream work to keep it fed. Unlike baseline, ops that feed the bottleneck get up to 4x priority boost.' },
+    ];
+    const [selectedAlgorithms, setSelectedAlgorithms] = useState(['baseline', 'earliest-due-date', 'critical-path', 'work-leveling', 'bottleneck-first']);
+    const [comparisonResults, setComparisonResults] = useState(null); // { baseline: {...}, 'earliest-due-date': {...}, ... }
+    const [activeAlgorithm, setActiveAlgorithm] = useState('baseline');
+    const [isComparing, setIsComparing] = useState(false);
 
     const utilizationChartContainerRef = useRef(null);
     const [utilizationChartDimensions, setUtilizationChartDimensions] = useState({ width: 0, height: 0 });
@@ -540,7 +553,7 @@ const handleClearAllProjects = () => {
 
         try {
             addLog("Sending data to optimizer...");
-            const startResponse = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/optimize', {
+            const startResponse = await fetch('http://localhost:3001/api/optimize', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -556,7 +569,7 @@ const handleClearAllProjects = () => {
 
             const pollInterval = setInterval(async () => {
                 try {
-                    const statusResponse = await fetch(`https://production-scheduler-backend-aepw.onrender.com/api/schedule/status/${jobId}`);
+                    const statusResponse = await fetch(`http://localhost:3001/api/schedule/status/${jobId}`);
                     if (!statusResponse.ok) throw new Error(`Status check failed`);
                     
                     const jobStatus = await statusResponse.json();
@@ -648,7 +661,7 @@ const handleClearAllProjects = () => {
 
         try {
             addLog("Sending data to scheduling server to start job...");
-            const startResponse = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/schedule', {
+            const startResponse = await fetch('http://localhost:3001/api/schedule', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -665,7 +678,7 @@ const handleClearAllProjects = () => {
             // Start polling for status
             pollingIntervalRef.current = setInterval(async () => {
                 try {
-                    const statusResponse = await fetch(`https://production-scheduler-backend-aepw.onrender.com/api/schedule/status/${jobId}`);
+                    const statusResponse = await fetch(`http://localhost:3001/api/schedule/status/${jobId}`);
                     if (!statusResponse.ok) {
                         throw new Error(`Status check failed with status: ${statusResponse.status}`);
                     }
@@ -748,6 +761,160 @@ const handleClearAllProjects = () => {
             setIsLoading(false);
         }
     }, [projectTasks, params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, addLog, startDateOverrides, endDateOverrides]);
+
+    // --- Algorithm Comparison ---
+    const runAlgorithmComparison = useCallback(async () => {
+        if (projectTasks.length === 0) {
+            setError("No project data loaded. Use the Project Builder or upload a CSV.");
+            return;
+        }
+        if (selectedAlgorithms.length === 0) {
+            setError("Select at least one algorithm to compare.");
+            return;
+        }
+        setIsComparing(true);
+        setIsLoading(true);
+        setProgressStep('starting');
+        setProgressMessage("Starting algorithm comparison...");
+        setSimulationProgress(0);
+        setComparisonResults(null);
+        setError('');
+        setLogs([]);
+
+        const payload = {
+            projectTasks: projectTasks.map(t => ({
+                ...t,
+                StartDate: formatDate(t.StartDate),
+                DueDate: formatDate(t.DueDate),
+            })),
+            params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides,
+            hybridWorkers, efficiencyData, teamMemberNameMap, startDateOverrides, endDateOverrides,
+            algorithms: selectedAlgorithms
+        };
+
+        try {
+            addLog(`Starting comparison of ${selectedAlgorithms.length} algorithms: ${selectedAlgorithms.join(', ')}`);
+            const startResponse = await fetch('http://localhost:3001/api/schedule/compare', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (startResponse.status !== 202) {
+                const errorResult = await startResponse.json();
+                throw new Error(errorResult.error || 'Failed to start comparison job.');
+            }
+
+            const { jobId } = await startResponse.json();
+            addLog(`Comparison job started with ID: ${jobId}`);
+
+            pollingIntervalRef.current = setInterval(async () => {
+                try {
+                    const statusResponse = await fetch(`http://localhost:3001/api/schedule/status/${jobId}`);
+                    if (!statusResponse.ok) throw new Error(`Status check failed: ${statusResponse.status}`);
+                    const jobStatus = await statusResponse.json();
+
+                    setProgressMessage(jobStatus.message || 'Processing...');
+                    setSimulationProgress(jobStatus.progress || 0);
+                    setProgressStep(jobStatus.step || 'simulating');
+
+                    if (jobStatus.status === 'complete') {
+                        clearInterval(pollingIntervalRef.current);
+                        addLog("Comparison complete. Processing results.");
+
+                        const results = jobStatus.result;
+                        const algoResults = results.comparisonResults;
+                        setComparisonResults(algoResults);
+
+                        // Load the first algorithm's results into the existing display state
+                        const firstAlgo = selectedAlgorithms[0];
+                        setActiveAlgorithm(firstAlgo);
+                        loadAlgorithmResults(algoResults[firstAlgo]);
+
+                        setProgressMessage("Comparison complete!");
+                        setProgressStep('done');
+                        setTimeout(() => { setIsLoading(false); setIsComparing(false); }, 1000);
+
+                    } else if (jobStatus.status === 'error') {
+                        clearInterval(pollingIntervalRef.current);
+                        throw new Error(jobStatus.error || 'The comparison job failed.');
+                    }
+                } catch (pollError) {
+                    clearInterval(pollingIntervalRef.current);
+                    setError(`Error checking job status: ${pollError.message}`);
+                    setIsLoading(false);
+                    setIsComparing(false);
+                }
+            }, 2000);
+
+        } catch (e) {
+            console.error('Failed to start comparison:', e);
+            setError(`Failed to start comparison: ${e.message}`);
+            setIsLoading(false);
+            setIsComparing(false);
+        }
+    }, [projectTasks, params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, addLog, startDateOverrides, endDateOverrides, selectedAlgorithms]);
+
+    const loadAlgorithmResults = useCallback((results) => {
+        if (!results) return;
+        setLogs(results.logs || []);
+        if (results.error) setError(results.error);
+        setFinalSchedule(results.finalSchedule || []);
+
+        const projectSummaryList = (results.projectSummary || []).map(p => {
+            const effectiveDueDateStr = endDateOverrides[p.Project] || p.DueDate;
+            const effectiveDueDate = parseDate(effectiveDueDateStr);
+            const finishDate = parseDate(p.FinishDate);
+            const diffDays = (effectiveDueDate && finishDate)
+                ? Math.round((effectiveDueDate.getTime() - finishDate.getTime()) / (1000 * 60 * 60 * 24))
+                : 0;
+            return { ...p, OriginalStartDate: p.StartDate, daysVariance: diffDays };
+        }).sort((a,b) => a.Store.localeCompare(b.Store) || a.Project.localeCompare(b.Project));
+
+        const storeSummaryMap = {};
+        projectSummaryList.forEach(p => {
+            const store = p.Store;
+            const startDate = parseDate(p.StartDate);
+            const finishDate = parseDate(p.FinishDate);
+            const effectiveDueDateStr = endDateOverrides[p.Project] || p.DueDate;
+            const dueDate = parseDate(effectiveDueDateStr);
+            if (!startDate || !finishDate || !dueDate) return;
+            if (!storeSummaryMap[store]) {
+                storeSummaryMap[store] = { Store: store, StartDate: startDate, FinishDate: finishDate, DueDate: dueDate };
+            } else {
+                if (startDate < storeSummaryMap[store].StartDate) storeSummaryMap[store].StartDate = startDate;
+                if (finishDate > storeSummaryMap[store].FinishDate) storeSummaryMap[store].FinishDate = finishDate;
+                if (dueDate > storeSummaryMap[store].DueDate) storeSummaryMap[store].DueDate = dueDate;
+            }
+        });
+        const storeSummaryList = Object.values(storeSummaryMap).map(s => {
+            const diffDays = Math.round((s.DueDate.getTime() - s.FinishDate.getTime()) / (1000 * 60 * 60 * 24));
+            return { ...s, StartDate: formatDate(s.StartDate), FinishDate: formatDate(s.FinishDate), DueDate: formatDate(s.DueDate), daysVariance: diffDays };
+        }).sort((a, b) => a.Store.localeCompare(b.Store));
+
+        setSummaryData({ project: projectSummaryList, store: storeSummaryList });
+        setTeamUtilization(results.teamUtilization || []);
+        setProjectedCompletion(results.projectedCompletion || null);
+        setWeeklyOutput(results.weeklyOutput || []);
+        setDailyCompletions(results.dailyCompletions || []);
+        setTeamWorkload(results.teamWorkload || []);
+        setRecommendations(results.recommendations || []);
+    }, [endDateOverrides]);
+
+    const handleAlgorithmSwitch = useCallback((algoName) => {
+        if (comparisonResults && comparisonResults[algoName]) {
+            setActiveAlgorithm(algoName);
+            loadAlgorithmResults(comparisonResults[algoName]);
+        }
+    }, [comparisonResults, loadAlgorithmResults]);
+
+    const toggleAlgorithmSelection = (algoId) => {
+        setSelectedAlgorithms(prev =>
+            prev.includes(algoId)
+                ? prev.filter(a => a !== algoId)
+                : [...prev, algoId]
+        );
+    };
 
     // --- CONFIGURATION SAVE/LOAD ---
     const handleSaveConfig = () => {
@@ -975,7 +1142,7 @@ const handleClearAllProjects = () => {
                 <button onClick={() => downloadCSV('utilization')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Weekly Utilization</button>
                 <button onClick={() => downloadCSV('completions')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Daily Completions</button>
                 <button onClick={() => downloadCSV('completed_tasks')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Completed (Snowflake)</button>
-            </div></div><button onClick={runSchedulingEngine} disabled={isLoading || projectTasks.length === 0} className={`flex items-center px-4 py-2 text-white rounded-md font-semibold transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed ${needsRerun ? 'bg-orange-500 hover:bg-orange-600' : 'bg-blue-600 hover:bg-blue-700'}`}>{isLoading ? (<svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>) : (needsRerun ? <RefreshCw className="w-5 h-5 mr-2" /> : <Play className="w-5 h-5 mr-2" />)}{isLoading ? 'Running...' : (needsRerun ? 'Rerun Schedule' : 'Run Schedule')}</button></div></div></div></header>
+            </div></div><button onClick={runSchedulingEngine} disabled={isLoading || projectTasks.length === 0} className={`flex items-center px-4 py-2 text-white rounded-md font-semibold transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed ${needsRerun ? 'bg-orange-500 hover:bg-orange-600' : 'bg-blue-600 hover:bg-blue-700'}`}>{isLoading ? (<svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>) : (needsRerun ? <RefreshCw className="w-5 h-5 mr-2" /> : <Play className="w-5 h-5 mr-2" />)}{isLoading ? 'Running...' : (needsRerun ? 'Rerun Schedule' : 'Run Schedule')}</button><button onClick={runAlgorithmComparison} disabled={isLoading || isComparing || projectTasks.length === 0 || selectedAlgorithms.length === 0} className="flex items-center px-4 py-2 text-white rounded-md font-semibold transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed bg-purple-600 hover:bg-purple-700"><GitMerge className="w-5 h-5 mr-2" />{isComparing ? 'Comparing...' : 'Compare Algorithms'}</button></div></div></div></header>
             <main className="container mx-auto p-4 sm:p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg-col-span-1 flex flex-col space-y-6">
                     
@@ -1056,6 +1223,20 @@ const handleClearAllProjects = () => {
                             ) : (
                                 <p className="text-sm text-slate-500 mt-2 text-center py-4 bg-slate-50 rounded-md">No projects added yet.</p>
                             )}
+                        </div>
+                    </CollapsibleSection>
+                    <CollapsibleSection title="Algorithm Comparison" icon={GitMerge} defaultOpen={false}>
+                        <div className="space-y-3">
+                            <p className="text-sm text-slate-500">Select algorithms to compare. Each runs the same inputs with different priority logic.</p>
+                            {AVAILABLE_ALGORITHMS.map(algo => (
+                                <label key={algo.id} className="flex items-start space-x-3 p-2 rounded-md hover:bg-slate-50 cursor-pointer">
+                                    <input type="checkbox" checked={selectedAlgorithms.includes(algo.id)} onChange={() => toggleAlgorithmSelection(algo.id)} className="mt-1 h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500" />
+                                    <div>
+                                        <div className="text-sm font-medium text-slate-700">{algo.label}</div>
+                                        <div className="text-xs text-slate-400">{algo.description}</div>
+                                    </div>
+                                </label>
+                            ))}
                         </div>
                     </CollapsibleSection>
                     <CollapsibleSection title="Resource Optimizer" icon={Lightbulb} defaultOpen={false}>
@@ -1312,6 +1493,206 @@ const handleClearAllProjects = () => {
                 </div>
 
                 <div className="lg:col-span-2 flex flex-col space-y-6">
+                    {comparisonResults && (
+                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                            <div className="flex items-center justify-between mb-3">
+                                <h3 className="text-sm font-semibold text-slate-700">Viewing Results For:</h3>
+                                <span className="text-xs text-slate-500">{Object.keys(comparisonResults).length} algorithms compared</span>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                {Object.keys(comparisonResults).map(algoId => {
+                                    const algoInfo = AVAILABLE_ALGORITHMS.find(a => a.id === algoId);
+                                    const isActive = activeAlgorithm === algoId;
+                                    return (
+                                        <button
+                                            key={algoId}
+                                            onClick={() => handleAlgorithmSwitch(algoId)}
+                                            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                                                isActive
+                                                    ? 'bg-purple-600 text-white shadow-md'
+                                                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                            }`}
+                                        >
+                                            {algoInfo ? algoInfo.label : algoId}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            {activeAlgorithm && comparisonResults[activeAlgorithm] && (
+                                <p className="mt-2 text-xs text-slate-500">
+                                    {AVAILABLE_ALGORITHMS.find(a => a.id === activeAlgorithm)?.description}
+                                </p>
+                            )}
+                        </div>
+                    )}
+                    {comparisonResults && Object.keys(comparisonResults).length > 1 && (
+                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                            <h3 className="text-sm font-semibold text-slate-700 mb-3">Algorithm Comparison Summary</h3>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-sm">
+                                    <thead>
+                                        <tr className="border-b border-slate-200">
+                                            <th className="text-left py-2 pr-4 text-slate-500 font-medium"></th>
+                                            {Object.keys(comparisonResults).map(algoId => {
+                                                const algoInfo = AVAILABLE_ALGORITHMS.find(a => a.id === algoId);
+                                                return (
+                                                    <th key={algoId} className={`text-center py-2 px-3 font-medium ${activeAlgorithm === algoId ? 'text-purple-700' : 'text-slate-600'}`}>
+                                                        {algoInfo ? algoInfo.label : algoId}
+                                                    </th>
+                                                );
+                                            })}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr className="border-b border-slate-100">
+                                            <td className="py-2 pr-4 text-slate-500 font-medium relative group cursor-help">Projected Completion<div className="hidden group-hover:block absolute left-0 top-full z-50 w-64 p-2 mt-1 text-xs font-normal text-white bg-slate-800 rounded-lg shadow-lg">The latest finish date across all projects. Earlier is better — means all work is done sooner.</div></td>
+                                            {Object.entries(comparisonResults).map(([algoId, result]) => {
+                                                // Compute completion from projectSummary (latest FinishDate)
+                                                const summaries = result.projectSummary || [];
+                                                const completion = summaries.length > 0
+                                                    ? summaries.reduce((latest, p) => p.FinishDate > latest ? p.FinishDate : latest, summaries[0].FinishDate)
+                                                    : 'N/A';
+                                                const baselineSummaries = comparisonResults['baseline']?.projectSummary || [];
+                                                const baselineCompletion = baselineSummaries.length > 0
+                                                    ? baselineSummaries.reduce((latest, p) => p.FinishDate > latest ? p.FinishDate : latest, baselineSummaries[0].FinishDate)
+                                                    : null;
+                                                let badge = '';
+                                                let badgeColor = '';
+                                                if (baselineCompletion && completion !== 'N/A' && algoId !== 'baseline') {
+                                                    const diff = Math.round((new Date(completion) - new Date(baselineCompletion)) / (1000 * 60 * 60 * 24));
+                                                    if (diff < 0) { badge = `${diff}d`; badgeColor = 'text-green-600'; }
+                                                    else if (diff > 0) { badge = `+${diff}d`; badgeColor = 'text-red-500'; }
+                                                    else { badge = 'same'; badgeColor = 'text-slate-400'; }
+                                                }
+                                                return (
+                                                    <td key={algoId} className={`text-center py-2 px-3 ${activeAlgorithm === algoId ? 'bg-purple-50 font-semibold' : ''}`}>
+                                                        <div>{completion}</div>
+                                                        {badge && <div className={`text-xs ${badgeColor}`}>{badge}</div>}
+                                                    </td>
+                                                );
+                                            })}
+                                        </tr>
+                                        <tr className="border-b border-slate-100">
+                                            <td className="py-2 pr-4 text-slate-500 font-medium relative group cursor-help">Overload Warnings<div className="hidden group-hover:block absolute left-0 top-full z-50 w-64 p-2 mt-1 text-xs font-normal text-white bg-slate-800 rounded-lg shadow-lg">Teams flagged for sustained overload (over 120% capacity for 2+ consecutive weeks). Fewer is better.</div></td>
+                                            {Object.entries(comparisonResults).map(([algoId, result]) => {
+                                                const count = result.recommendations?.length || 0;
+                                                const baselineCount = comparisonResults['baseline']?.recommendations?.length || 0;
+                                                let badgeColor = '';
+                                                if (algoId !== 'baseline') {
+                                                    if (count < baselineCount) badgeColor = 'text-green-600';
+                                                    else if (count > baselineCount) badgeColor = 'text-red-500';
+                                                }
+                                                return (
+                                                    <td key={algoId} className={`text-center py-2 px-3 ${activeAlgorithm === algoId ? 'bg-purple-50 font-semibold' : ''}`}>
+                                                        <span className={badgeColor}>{count}</span>
+                                                    </td>
+                                                );
+                                            })}
+                                        </tr>
+                                        <tr className="border-b border-slate-100">
+                                            <td className="py-2 pr-4 text-slate-500 font-medium relative group cursor-help">Schedule Entries<div className="hidden group-hover:block absolute left-0 top-full z-50 w-64 p-2 mt-1 text-xs font-normal text-white bg-slate-800 rounded-lg shadow-lg">Total daily work assignments generated. More entries means work is spread across more days.</div></td>
+                                            {Object.entries(comparisonResults).map(([algoId, result]) => (
+                                                <td key={algoId} className={`text-center py-2 px-3 ${activeAlgorithm === algoId ? 'bg-purple-50 font-semibold' : ''}`}>
+                                                    {result.finalSchedule?.length?.toLocaleString() || 0}
+                                                </td>
+                                            ))}
+                                        </tr>
+                                        <tr className="border-b border-slate-100">
+                                            <td className="py-2 pr-4 text-slate-500 font-medium relative group cursor-help">Peak Utilization<div className="hidden group-hover:block absolute left-0 top-full z-50 w-64 p-2 mt-1 text-xs font-normal text-white bg-slate-800 rounded-lg shadow-lg">Highest utilization any team hits in any week. Over 100% means overtime is required. Team name shows which team peaks.</div></td>
+                                            {Object.entries(comparisonResults).map(([algoId, result]) => {
+                                                let peakUtil = 0;
+                                                let peakTeam = '';
+                                                (result.teamUtilization || []).forEach(week => {
+                                                    (week.teams || []).forEach(team => {
+                                                        if (team.utilization > peakUtil) {
+                                                            peakUtil = team.utilization;
+                                                            peakTeam = team.name;
+                                                        }
+                                                    });
+                                                });
+                                                return (
+                                                    <td key={algoId} className={`text-center py-2 px-3 ${activeAlgorithm === algoId ? 'bg-purple-50 font-semibold' : ''}`}>
+                                                        <div>{peakUtil}%</div>
+                                                        <div className="text-xs text-slate-400">{peakTeam}</div>
+                                                    </td>
+                                                );
+                                            })}
+                                        </tr>
+                                        <tr className="border-b border-slate-100">
+                                            <td className="py-2 pr-4 text-slate-500 font-medium relative group cursor-help">Projects at Risk<div className="hidden group-hover:block absolute left-0 top-full z-50 w-64 p-2 mt-1 text-xs font-normal text-white bg-slate-800 rounded-lg shadow-lg">Projects where the finish date is after the due date — these shipments would be late. Zero is the goal.</div></td>
+                                            {Object.entries(comparisonResults).map(([algoId, result]) => {
+                                                const summaries = result.projectSummary || [];
+                                                const atRisk = summaries.filter(p => p.FinishDate > p.DueDate).length;
+                                                const baselineSummaries = comparisonResults['baseline']?.projectSummary || [];
+                                                const baselineAtRisk = baselineSummaries.filter(p => p.FinishDate > p.DueDate).length;
+                                                let badgeColor = '';
+                                                if (algoId !== 'baseline') {
+                                                    if (atRisk < baselineAtRisk) badgeColor = 'text-green-600';
+                                                    else if (atRisk > baselineAtRisk) badgeColor = 'text-red-500';
+                                                }
+                                                return (
+                                                    <td key={algoId} className={`text-center py-2 px-3 ${activeAlgorithm === algoId ? 'bg-purple-50 font-semibold' : ''}`}>
+                                                        <span className={badgeColor}>{atRisk}</span>
+                                                        <div className="text-xs text-slate-400">of {summaries.length}</div>
+                                                    </td>
+                                                );
+                                            })}
+                                        </tr>
+                                        <tr className="border-b border-slate-100">
+                                            <td className="py-2 pr-4 text-slate-500 font-medium relative group cursor-help">Overtime Weeks<div className="hidden group-hover:block absolute left-0 top-full z-50 w-64 p-2 mt-1 text-xs font-normal text-white bg-slate-800 rounded-lg shadow-lg">Total team-weeks where utilization exceeds 100%. Each count = one team over capacity for one week. Fewer means less overtime and burnout risk.</div></td>
+                                            {Object.entries(comparisonResults).map(([algoId, result]) => {
+                                                let overtimeWeeks = 0;
+                                                (result.teamUtilization || []).forEach(week => {
+                                                    (week.teams || []).forEach(team => {
+                                                        if (team.utilization > 100) overtimeWeeks++;
+                                                    });
+                                                });
+                                                const baselineOT = (() => {
+                                                    let count = 0;
+                                                    (comparisonResults['baseline']?.teamUtilization || []).forEach(week => {
+                                                        (week.teams || []).forEach(team => { if (team.utilization > 100) count++; });
+                                                    });
+                                                    return count;
+                                                })();
+                                                let badgeColor = '';
+                                                if (algoId !== 'baseline') {
+                                                    if (overtimeWeeks < baselineOT) badgeColor = 'text-green-600';
+                                                    else if (overtimeWeeks > baselineOT) badgeColor = 'text-red-500';
+                                                }
+                                                return (
+                                                    <td key={algoId} className={`text-center py-2 px-3 ${activeAlgorithm === algoId ? 'bg-purple-50 font-semibold' : ''}`}>
+                                                        <span className={badgeColor}>{overtimeWeeks}</span>
+                                                        <div className="text-xs text-slate-400">team-weeks</div>
+                                                    </td>
+                                                );
+                                            })}
+                                        </tr>
+                                        <tr>
+                                            <td className="py-2 pr-4 text-slate-500 font-medium relative group cursor-help">Avg Utilization<div className="hidden group-hover:block absolute left-0 top-full z-50 w-64 p-2 mt-1 text-xs font-normal text-white bg-slate-800 rounded-lg shadow-lg">Average utilization across all teams and weeks. Higher = more efficient labor use, but above 85-90% leaves little room for unexpected delays.</div></td>
+                                            {Object.entries(comparisonResults).map(([algoId, result]) => {
+                                                let totalUtil = 0;
+                                                let count = 0;
+                                                (result.teamUtilization || []).forEach(week => {
+                                                    (week.teams || []).forEach(team => {
+                                                        if (team.utilization > 0) {
+                                                            totalUtil += team.utilization;
+                                                            count++;
+                                                        }
+                                                    });
+                                                });
+                                                const avg = count > 0 ? Math.round(totalUtil / count) : 0;
+                                                return (
+                                                    <td key={algoId} className={`text-center py-2 px-3 ${activeAlgorithm === algoId ? 'bg-purple-50 font-semibold' : ''}`}>
+                                                        {avg}%
+                                                    </td>
+                                                );
+                                            })}
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
                     <CollapsibleSection title="Recommendations" icon={Lightbulb} defaultOpen={true}>
                         <div className="space-y-3">
                             {recommendations.length > 0 ? (
