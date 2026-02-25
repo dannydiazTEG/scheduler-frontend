@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { PlusCircle, MinusCircle, Upload, Download, Play, XCircle, ChevronDown, ChevronUp, UserPlus, Trash2, Clock, BarChart, LineChart, RefreshCw, Users, GitMerge, DollarSign, Building, Briefcase, Trello, HeartPulse, Lightbulb, Wrench, CheckCircle, Save } from 'lucide-react';
+import { PlusCircle, Upload, Download, Play, XCircle, ChevronDown, ChevronUp, UserPlus, Trash2, Clock, BarChart, LineChart, RefreshCw, Users, GitMerge, DollarSign, Building, Briefcase, Trello, Lightbulb, Wrench, CheckCircle, Save } from 'lucide-react';
 
 // Helper function to parse dates, robust to different formats
 const parseDate = (dateStr) => {
@@ -136,7 +136,7 @@ export default function App() {
     const [logs, setLogs] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState('');
-    const [projectedCompletion, setProjectedCompletion] = useState(null);
+    const [, setProjectedCompletion] = useState(null);
     const [isLogsVisible, setIsLogsVisible] = useState(false);
     const [utilizationView, setUtilizationView] = useState('bar');
     const [lastRunState, setLastRunState] = useState(null);
