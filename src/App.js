@@ -76,7 +76,7 @@ const createDefaultTeamDefs = () => {
 const DEFAULT_SCHEDULING_PARAMETERS = {
     startDate: formatDate(new Date()), hoursPerDay: 8.0,
     productivityAssumption: 0.78,
-    globalBuffer: 15 // Global Buffer adeed, default at 15%
+    globalBuffer: 15, // Global Buffer adeed, default at 15%
     // UPDATED: Removed 'Receiving' and 'Quality Review / Testing' from ignore list
     teamsToIgnore: 'Unassigned, Wrapping / Packaging, Print',
     holidays: '2025-07-04, 2025-09-01, 2025-11-24, 2025-12-24, 2025-12-25, 2026-01-01',
@@ -132,7 +132,7 @@ export default function App() {
     const [startDateOverrides, setStartDateOverrides] = useState({});
     const [endDateOverrides, setEndDateOverrides] = useState({});
     const [teamWorkload, setTeamWorkload] = useState([]);
-    const [recommendations, setRecommendations] = useState([]);
+
     const [logs, setLogs] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState('');
@@ -186,8 +186,10 @@ export default function App() {
         if (!ganttFilter) {
             return summaryData.project;
         }
+        const filter = ganttFilter.toLowerCase();
         return summaryData.project.filter(p =>
-            p.Project.toLowerCase().includes(ganttFilter.toLowerCase())
+            p.Project.toLowerCase().includes(filter) ||
+            p.Store.toLowerCase().includes(filter)
         );
     }, [summaryData.project, ganttFilter]);
 
@@ -626,7 +628,7 @@ const handleClearAllProjects = () => {
         setWeeklyOutput([]);
         setDailyCompletions([]);
         setTeamWorkload([]);
-        setRecommendations([]);
+
         setLogs([]);
         setError('');
         setProjectedCompletion(null);
@@ -724,7 +726,7 @@ const handleClearAllProjects = () => {
                         setWeeklyOutput(results.weeklyOutput || []);
                         setDailyCompletions(results.dailyCompletions || []);
                         setTeamWorkload(results.teamWorkload || []);
-                        setRecommendations(results.recommendations || []);
+
                         setCompletedTasks(results.completedTasks || []);
                         
                         setProgressMessage("Schedule complete!");
@@ -846,6 +848,8 @@ const handleClearAllProjects = () => {
             "Order": task.Order,
             "Estimated Hours": task['Estimated Hours'],
             "Value": task.Value,
+            "LagAfterHours": task.LagAfterHours || 0,
+            "AssemblyGroup": task.AssemblyGroup || '',
             "StartDate": formatDate(task.StartDate),
             "DueDate": formatDate(task.DueDate)
         }));
@@ -884,7 +888,7 @@ const handleClearAllProjects = () => {
             filename = 'master_daily_work_log.csv';
         } else if (type === 'utilization') {
              if (teamUtilization.length === 0) return;
-             dataToExport = teamUtilization.flatMap(week => week.teams.map(team => ({ Week: week.week, Team: team.name, WorkedHours: team.worked, CapacityHours: team.capacity, Utilization: team.utilization })));
+             dataToExport = teamUtilization.flatMap(week => week.teams.map(team => ({ Week: week.week, Team: team.name, WorkedHours: team.worked, CapacityHours: team.capacity, Utilization: (team.utilization / 100).toFixed(2) })));
              filename = 'weekly_team_utilization.csv';
         } else if (type === 'completions') {
             if (dailyCompletions.length === 0) return;
@@ -897,15 +901,39 @@ const handleClearAllProjects = () => {
                 Value: item.Value
             }));
             filename = 'daily_completions_report.csv';
-        } else if (type === 'completed_tasks') {
-            if (completedTasks.length === 0) return;
-            dataToExport = completedTasks.map(task => ({
-                Project: task.Project,
-                SKU: task.SKU,
-                Operation: task.Operation,
-                CompletionDate: task.CompletionDate,
-            }));
-            filename = 'completed_tasks_from_snowflake.csv';
+        } else if (type === 'project_summary') {
+            if (summaryData.project.length === 0) return;
+            dataToExport = [...summaryData.project]
+                .sort((a, b) => {
+                    const dateA = parseDate(startDateOverrides[a.Project] || a.StartDate);
+                    const dateB = parseDate(startDateOverrides[b.Project] || b.StartDate);
+                    return (dateA?.getTime() || 0) - (dateB?.getTime() || 0);
+                })
+                .map(row => ({
+                    Store: row.Store,
+                    Job: row.Project,
+                    'Start Date': startDateOverrides[row.Project] || row.StartDate,
+                    'Due Date': endDateOverrides[row.Project] || row.DueDate,
+                    'Finish Date': row.FinishDate,
+                    'Days +/-': row.daysVariance,
+                }));
+            filename = 'job_schedule_summary.csv';
+        } else if (type === 'store_summary') {
+            if (summaryData.store.length === 0) return;
+            dataToExport = [...summaryData.store]
+                .sort((a, b) => {
+                    const dateA = parseDate(a.StartDate);
+                    const dateB = parseDate(b.StartDate);
+                    return (dateA?.getTime() || 0) - (dateB?.getTime() || 0);
+                })
+                .map(row => ({
+                    Store: row.Store,
+                    'Start Date': row.StartDate,
+                    'Due Date': row.DueDate,
+                    'Finish Date': row.FinishDate,
+                    'Days +/-': row.daysVariance,
+                }));
+            filename = 'store_schedule_summary.csv';
         } else {
             return;
         }
@@ -974,7 +1002,8 @@ const handleClearAllProjects = () => {
                 <button onClick={() => downloadCSV('schedule')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Full Schedule</button>
                 <button onClick={() => downloadCSV('utilization')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Weekly Utilization</button>
                 <button onClick={() => downloadCSV('completions')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Daily Completions</button>
-                <button onClick={() => downloadCSV('completed_tasks')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Completed (Snowflake)</button>
+                <button onClick={() => downloadCSV('project_summary')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Job Schedule Summary</button>
+                <button onClick={() => downloadCSV('store_summary')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Store Schedule Summary</button>
             </div></div><button onClick={runSchedulingEngine} disabled={isLoading || projectTasks.length === 0} className={`flex items-center px-4 py-2 text-white rounded-md font-semibold transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed ${needsRerun ? 'bg-orange-500 hover:bg-orange-600' : 'bg-blue-600 hover:bg-blue-700'}`}>{isLoading ? (<svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>) : (needsRerun ? <RefreshCw className="w-5 h-5 mr-2" /> : <Play className="w-5 h-5 mr-2" />)}{isLoading ? 'Running...' : (needsRerun ? 'Rerun Schedule' : 'Run Schedule')}</button></div></div></div></header>
             <main className="container mx-auto p-4 sm:p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg-col-span-1 flex flex-col space-y-6">
@@ -1312,35 +1341,15 @@ const handleClearAllProjects = () => {
                 </div>
 
                 <div className="lg:col-span-2 flex flex-col space-y-6">
-                    <CollapsibleSection title="Recommendations" icon={Lightbulb} defaultOpen={true}>
-                        <div className="space-y-3">
-                            {recommendations.length > 0 ? (
-                                <>
-                                    {recommendations.map((rec, i) => (
-                                        <div key={i} className="p-3 bg-yellow-100 border-l-4 border-yellow-500 rounded-r-lg">
-                                            <p className="font-semibold text-yellow-800">Overload on {rec.team}</p>
-                                            <p className="text-sm text-yellow-700">
-                                                The {rec.team} team is projected to be over 120% capacity for {rec.weeks.length} consecutive weeks starting {rec.weeks[0]}.
-                                                The main contributors are: <span className="font-semibold">{rec.topProjects.join(', ')}</span>.
-                                            </p>
-                                        </div>
-                                    ))}
-                                </>
-                            ) : (
-                                <p className="text-slate-500 text-center py-4">No significant bottlenecks detected. Run the schedule to generate recommendations.</p>
-                            )}
-                        </div>
-                    </CollapsibleSection>
-
                     <CollapsibleSection title="Project Timeline" icon={Trello} defaultOpen={true}>
                         <div className="mb-4 px-1">
-                            <label htmlFor="gantt-filter" className="block text-sm font-medium text-slate-600 mb-1">Filter by Job Name</label>
+                            <label htmlFor="gantt-filter" className="block text-sm font-medium text-slate-600 mb-1">Filter by Job Name or Store</label>
                             <input
                                 type="text"
                                 id="gantt-filter"
                                 value={ganttFilter}
                                 onChange={(e) => setGanttFilter(e.target.value)}
-                                placeholder="e.g., Prison Break, Job-001..."
+                                placeholder="e.g., Prison Break, Store-A..."
                                 className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 bg-slate-100 text-sm p-2"
                             />
                         </div>
@@ -1363,7 +1372,7 @@ const handleClearAllProjects = () => {
                         </div>
                     </CollapsibleSection>
 
-                    <CollapsibleSection title="Project Schedule Summary" icon={Briefcase} defaultOpen={false}>
+                    <CollapsibleSection title="Job Schedule Summary" icon={Briefcase} defaultOpen={false}>
                         <div className="flex justify-end mb-4">
                             <div className="flex items-center rounded-lg bg-slate-100 p-1">
                                 <button onClick={() => setSummaryView('project')} className={`px-3 py-1 text-sm font-semibold rounded-md flex items-center ${summaryView === 'project' ? 'bg-white shadow text-blue-600' : 'text-slate-600 hover:bg-slate-200'}`}><Briefcase className="w-4 h-4 mr-2"/>Job View</button>
@@ -1479,7 +1488,13 @@ const handleClearAllProjects = () => {
                         <div ref={workloadChartContainerRef} className="flex-grow min-h-[24rem] relative">
                             {teamWorkload.length > 0 ? (
                                 <TeamWorkloadChartComponent
-                                    data={teamWorkload}
+                                    data={(() => {
+                                        let lastActiveIndex = 0;
+                                        teamWorkload.forEach((week, i) => {
+                                            if (week.teams.some(t => t.workloadRatio > 0)) lastActiveIndex = i;
+                                        });
+                                        return teamWorkload.slice(0, lastActiveIndex + 1);
+                                    })()}
                                     teams={teamDefs.headcounts}
                                     width={workloadChartDimensions.width}
                                     height={workloadChartDimensions.height}
