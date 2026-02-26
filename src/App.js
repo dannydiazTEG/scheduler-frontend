@@ -35,6 +35,22 @@ const addDays = (date, days) => {
 };
 
 
+const buildFilename = (scheduleName, reportType, extension) => {
+    const trimmed = scheduleName?.trim();
+    if (!trimmed) return null;
+    const today = new Date().toISOString().split('T')[0];
+    const typeMap = {
+        schedule: 'Full_Schedule',
+        utilization: 'Weekly_Utilization',
+        completions: 'Daily_Completions',
+        project_summary: 'Job_Schedule_Summary',
+        store_summary: 'Store_Schedule_Summary',
+        config: 'Config',
+    };
+    const suffix = typeMap[reportType] || reportType;
+    return `${trimmed}_${suffix}_${today}.${extension}`;
+};
+
 const TEAM_COLORS = ['#3b82f6', '#000000', '#f97316', '#8b5cf6', '#10b981', '#ef4444', '#f59e0b', '#826c60', '#6366f1', '#d946ef', '#8b4513'];
 // UPDATED: Added Receiving and QC to the sort order
 const TEAM_SORT_ORDER = ['Receiving', 'CNC', 'Metal', 'Scenic', 'Paint', 'Carpentry', 'Assembly', 'Tech', 'QC', 'Hybrid'];
@@ -110,7 +126,8 @@ export default function App() {
     const [hybridWorkers, setHybridWorkers] = useState([{id: 1, name: 'Hybrid1', primaryTeam: 'Tech', secondaryTeam: 'Metal'}]);
     const [ptoEntries, setPtoEntries] = useState([]);
     const [workHourOverrides, setWorkHourOverrides] = useState([]);
-    
+    const [scheduleName, setScheduleName] = useState('');
+
     const [projectTasks, setProjectTasks] = useState([]);
     const [routingData, setRoutingData] = useState([]);
     const [builderState, setBuilderState] = useState({
@@ -754,6 +771,7 @@ const handleClearAllProjects = () => {
     // --- CONFIGURATION SAVE/LOAD ---
     const handleSaveConfig = () => {
         const config = {
+            scheduleName,
             teamDefs,
             params,
             teamMemberChanges,
@@ -765,7 +783,7 @@ const handleClearAllProjects = () => {
         const blob = new Blob([dataStr], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
-        link.download = 'schedule_config.json';
+        link.download = buildFilename(scheduleName, 'config', 'json') || 'schedule_config.json';
         link.href = url;
         document.body.appendChild(link);
         link.click();
@@ -816,6 +834,7 @@ const handleClearAllProjects = () => {
                     setHybridWorkers(config.hybridWorkers || []);
                     setPtoEntries(config.ptoEntries || []);
                     setWorkHourOverrides(config.workHourOverrides || []);
+                    setScheduleName(config.scheduleName || '');
                     addLog("Configuration loaded successfully. New teams (if any) have been added.");
                     setError('');
                 } else {
@@ -938,6 +957,8 @@ const handleClearAllProjects = () => {
             return;
         }
 
+        filename = buildFilename(scheduleName, type, 'csv') || filename;
+
         const csv = simpleCsvUnparse(dataToExport);
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = filename;
@@ -994,6 +1015,7 @@ const handleClearAllProjects = () => {
                 </div>
             )}
             <header className="bg-white shadow-md sticky top-0 z-20"><div className="container mx-auto px-4 sm:px-6 lg:px-8"><div className="flex justify-between items-center py-4"><h1 className="text-2xl font-bold text-slate-900">Production Scheduling Engine v2</h1><div className="flex items-center space-x-4">
+                <input type="text" value={scheduleName} onChange={(e) => setScheduleName(e.target.value)} placeholder="Schedule Name (optional)" className="px-3 py-2 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-56" />
                 <button onClick={handleSaveConfig} className="flex items-center px-4 py-2 bg-slate-600 text-white rounded-md hover:bg-slate-700 font-semibold"><Save className="w-5 h-5 mr-2" />Save Config</button>
                 <button onClick={() => fileInputRef.current.click()} className="flex items-center px-4 py-2 bg-slate-600 text-white rounded-md hover:bg-slate-700 font-semibold"><Upload className="w-5 h-5 mr-2" />Load Config</button>
                 <input type="file" ref={fileInputRef} onChange={handleLoadConfig} className="hidden" accept=".json" />
