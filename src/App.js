@@ -93,6 +93,7 @@ const DEFAULT_SCHEDULING_PARAMETERS = {
     startDate: formatDate(new Date()), hoursPerDay: 8.0,
     productivityAssumption: 0.78,
     globalBuffer: 15, // Global Buffer adeed, default at 15%
+    maxIdleDays: 7, // Dwell time threshold - boost priority after this many days idle between steps
     // UPDATED: Removed 'Receiving' and 'Quality Review / Testing' from ignore list
     teamsToIgnore: 'Unassigned, Wrapping / Packaging, Print',
     holidays: '2025-07-04, 2025-09-01, 2025-11-24, 2025-12-24, 2025-12-25, 2026-01-01',
@@ -149,6 +150,21 @@ export default function App() {
     const [startDateOverrides, setStartDateOverrides] = useState({});
     const [endDateOverrides, setEndDateOverrides] = useState({});
     const [teamWorkload, setTeamWorkload] = useState([]);
+    const [bottleneckConfig, setBottleneckConfig] = useState([
+        { team: 'Paint', enabled: false, weight: 1 },
+        { team: 'Carpentry', enabled: false, weight: 1 },
+        { team: 'Assembly', enabled: true, weight: 1 },
+        { team: 'Tech', enabled: false, weight: 1 },
+    ]);
+    const [dailyPrioritySnapshots, setDailyPrioritySnapshots] = useState([]);
+    const [highlightedTaskId, setHighlightedTaskId] = useState(null);
+    const [trendChartFilter, setTrendChartFilter] = useState('rising');
+    const [trendChartTeamFilter, setTrendChartTeamFilter] = useState('');
+    const [trendChartCount, setTrendChartCount] = useState(10);
+    const [alertTableRows, setAlertTableRows] = useState(10);
+    const [alertSortColumn, setAlertSortColumn] = useState('scoreChange');
+    const [alertSortDir, setAlertSortDir] = useState('desc');
+    const [trendGroupBy, setTrendGroupBy] = useState('operation'); // 'operation' | 'sku'
 
     const [logs, setLogs] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
@@ -187,6 +203,8 @@ export default function App() {
     const [workloadChartDimensions, setWorkloadChartDimensions] = useState({ width: 0, height: 0 });
     const ganttChartContainerRef = useRef(null);
     const [ganttChartDimensions, setGanttChartDimensions] = useState({ width: 0, height: 0 });
+    const priorityTrendChartRef = useRef(null);
+    const [priorityTrendChartDimensions, setPriorityTrendChartDimensions] = useState({ width: 0, height: 0 });
     const fileInputRef = useRef(null); // For loading config
 
     const inputStyles = "mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 bg-slate-100";
@@ -226,6 +244,150 @@ export default function App() {
         return Object.values(projectsMap).sort((a, b) => a.name.localeCompare(b.name));
     }, [projectTasks]);
 
+    // Priority trend data: groups snapshots by TaskID, computes score changes over time
+    const priorityTrendData = React.useMemo(() => {
+        if (!dailyPrioritySnapshots || dailyPrioritySnapshots.length === 0) return [];
+        const grouped = {};
+        dailyPrioritySnapshots.forEach(snap => {
+            const key = snap.TaskID || `${snap.SKU}-${snap.Operation}`;
+            if (!grouped[key]) {
+                grouped[key] = {
+                    taskId: key,
+                    sku: snap.SKU,
+                    skuName: snap['SKU Name'] || snap.SKUName || '',
+                    operation: snap.Operation,
+                    team: snap.Team,
+                    project: snap.Project,
+                    store: snap.Store,
+                    days: [],
+                };
+            }
+            grouped[key].days.push({
+                date: snap.Date,
+                score: parseFloat(snap.DynamicPriority) || 0,
+                base: parseFloat(snap.BasePriority) || 0,
+                hoursLeft: parseFloat(snap.HoursRemaining) || 0,
+                daysToDue: parseFloat(snap.DaysUntilDue) || 0,
+                idleDays: parseFloat(snap.DaysSinceLastStep) || 0,
+                dwellMult: parseFloat(snap.DwellMultiplier) || 1,
+            });
+        });
+        return Object.values(grouped)
+            .filter(item => item.days.length >= 2)
+            .map(item => {
+                item.days.sort((a, b) => a.date.localeCompare(b.date));
+                const first = item.days[0];
+                const last = item.days[item.days.length - 1];
+                return {
+                    ...item,
+                    firstScore: first.score,
+                    lastScore: last.score,
+                    scoreChange: last.score - first.score,
+                    daysInQueue: item.days.length,
+                    maxScore: Math.max(...item.days.map(d => d.score)),
+                };
+            })
+            .sort((a, b) => b.scoreChange - a.scoreChange);
+    }, [dailyPrioritySnapshots]);
+
+    // SKU Journey data: groups snapshots by SKU+Project to show full production journey
+    const skuJourneyData = React.useMemo(() => {
+        if (!dailyPrioritySnapshots || dailyPrioritySnapshots.length === 0) return [];
+        const grouped = {};
+        dailyPrioritySnapshots.forEach(snap => {
+            const key = `${snap.SKU}|${snap.Project}`;
+            if (!grouped[key]) {
+                grouped[key] = { sku: snap.SKU, skuName: snap['SKU Name'] || snap.SKUName || '', project: snap.Project, store: snap.Store, allTeams: new Set(), dayMap: {} };
+            }
+            const g = grouped[key];
+            const score = parseFloat(snap.DynamicPriority) || 0;
+            g.allTeams.add(snap.Team);
+            // For each day, keep the snapshot with the highest DynamicPriority (bottleneck operation)
+            if (!g.dayMap[snap.Date] || score > g.dayMap[snap.Date].score) {
+                g.dayMap[snap.Date] = {
+                    date: snap.Date, score, operation: snap.Operation, team: snap.Team,
+                    order: parseInt(snap.Order) || 0,
+                    base: parseFloat(snap.BasePriority) || 0,
+                    hoursLeft: parseFloat(snap.HoursRemaining) || 0,
+                    daysToDue: parseFloat(snap.DaysUntilDue) || 0,
+                    idleDays: parseFloat(snap.DaysSinceLastStep) || 0,
+                    dwellMult: parseFloat(snap.DwellMultiplier) || 1,
+                };
+            }
+        });
+        return Object.values(grouped)
+            .map(item => {
+                const days = Object.values(item.dayMap).sort((a, b) => a.date.localeCompare(b.date));
+                if (days.length < 2) return null;
+                const first = days[0]; const last = days[days.length - 1];
+                // Detect operation transitions
+                const transitions = [];
+                const opSequence = [days[0].operation];
+                for (let i = 1; i < days.length; i++) {
+                    if (days[i].operation !== days[i - 1].operation) {
+                        transitions.push({ date: days[i].date, fromOp: days[i - 1].operation, toOp: days[i].operation, fromTeam: days[i - 1].team, toTeam: days[i].team });
+                        opSequence.push(days[i].operation);
+                    }
+                }
+                return {
+                    taskId: `${item.sku}|${item.project}`, sku: item.sku, skuName: item.skuName,
+                    project: item.project, store: item.store, operation: last.operation, team: last.team,
+                    allTeams: [...item.allTeams], opSequence, transitions, days,
+                    firstScore: first.score, lastScore: last.score, scoreChange: last.score - first.score,
+                    daysInQueue: days.length, maxScore: Math.max(...days.map(d => d.score)), isJourney: true,
+                };
+            })
+            .filter(Boolean)
+            .sort((a, b) => b.scoreChange - a.scoreChange);
+    }, [dailyPrioritySnapshots]);
+
+    // Active trend data switches between operation-level and SKU journey grouping
+    const activeTrendData = React.useMemo(() => {
+        return trendGroupBy === 'sku' ? skuJourneyData : priorityTrendData;
+    }, [trendGroupBy, skuJourneyData, priorityTrendData]);
+
+    // Filtered trend lines for the line chart based on filter dropdown and count
+    const filteredTrendLines = React.useMemo(() => {
+        if (activeTrendData.length === 0) return [];
+        const n = trendChartCount || 10;
+        if (trendChartFilter === 'rising') {
+            return activeTrendData.slice(0, n);
+        }
+        if (trendChartFilter === 'final') {
+            return [...activeTrendData].sort((a, b) => b.lastScore - a.lastScore).slice(0, n);
+        }
+        if (trendChartFilter === 'byteam' && trendChartTeamFilter) {
+            return activeTrendData.filter(item => item.team === trendChartTeamFilter).slice(0, n);
+        }
+        return activeTrendData.slice(0, n);
+    }, [activeTrendData, trendChartFilter, trendChartTeamFilter, trendChartCount]);
+
+    // Sorted alert table data
+    const sortedAlertData = React.useMemo(() => {
+        if (activeTrendData.length === 0) return [];
+        const data = [...activeTrendData];
+        data.sort((a, b) => {
+            let aVal, bVal;
+            switch (alertSortColumn) {
+                case 'sku': aVal = a.sku; bVal = b.sku; break;
+                case 'skuName': aVal = a.skuName; bVal = b.skuName; break;
+                case 'operation': aVal = a.operation; bVal = b.operation; break;
+                case 'team': aVal = a.team; bVal = b.team; break;
+                case 'project': aVal = a.project; bVal = b.project; break;
+                case 'firstScore': aVal = a.firstScore; bVal = b.firstScore; break;
+                case 'lastScore': aVal = a.lastScore; bVal = b.lastScore; break;
+                case 'scoreChange': aVal = a.scoreChange; bVal = b.scoreChange; break;
+                case 'daysInQueue': aVal = a.daysInQueue; bVal = b.daysInQueue; break;
+                case 'opCount': aVal = (a.opSequence || []).length; bVal = (b.opSequence || []).length; break;
+                default: aVal = a.scoreChange; bVal = b.scoreChange;
+            }
+            if (typeof aVal === 'number' && typeof bVal === 'number') {
+                return alertSortDir === 'desc' ? bVal - aVal : aVal - bVal;
+            }
+            return alertSortDir === 'desc' ? String(bVal).localeCompare(String(aVal)) : String(aVal).localeCompare(String(bVal));
+        });
+        return data;
+    }, [activeTrendData, alertSortColumn, alertSortDir]);
 
     useEffect(() => {
         if (lastRunState) {
@@ -265,6 +427,7 @@ export default function App() {
             { ref: utilizationChartContainerRef, handler: createResizeHandler(utilizationChartContainerRef, setUtilizationChartDimensions) },
             { ref: workloadChartContainerRef, handler: createResizeHandler(workloadChartContainerRef, setWorkloadChartDimensions) },
             { ref: ganttChartContainerRef, handler: createResizeHandler(ganttChartContainerRef, setGanttChartDimensions) },
+            { ref: priorityTrendChartRef, handler: createResizeHandler(priorityTrendChartRef, setPriorityTrendChartDimensions) },
         ];
 
         const resizeObservers = observers.map(({ ref, handler }) => {
@@ -279,6 +442,19 @@ export default function App() {
         return () => {
             resizeObservers.forEach(observer => observer.disconnect());
         };
+    }, []);
+
+    // Callback ref for priority trend chart (inside collapsed section, not available on mount)
+    const priorityTrendChartCallbackRef = useCallback((node) => {
+        priorityTrendChartRef.current = node;
+        if (node) {
+            setPriorityTrendChartDimensions({ width: node.clientWidth, height: node.clientHeight });
+            const observer = new ResizeObserver(() => {
+                setPriorityTrendChartDimensions({ width: node.clientWidth, height: node.clientHeight });
+            });
+            observer.observe(node);
+            // Store observer for cleanup isn't critical here since section unmount handles it
+        }
     }, []);
 
     const addLog = useCallback((message) => {
@@ -559,7 +735,7 @@ const handleClearAllProjects = () => {
 
         try {
             addLog("Sending data to optimizer...");
-            const startResponse = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/optimize', {
+            const startResponse = await fetch('http://localhost:3001/api/optimize', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -575,7 +751,7 @@ const handleClearAllProjects = () => {
 
             const pollInterval = setInterval(async () => {
                 try {
-                    const statusResponse = await fetch(`https://production-scheduler-backend-aepw.onrender.com/api/schedule/status/${jobId}`);
+                    const statusResponse = await fetch(`http://localhost:3001/api/schedule/status/${jobId}`);
                     if (!statusResponse.ok) throw new Error(`Status check failed`);
                     
                     const jobStatus = await statusResponse.json();
@@ -645,13 +821,14 @@ const handleClearAllProjects = () => {
         setWeeklyOutput([]);
         setDailyCompletions([]);
         setTeamWorkload([]);
+        setDailyPrioritySnapshots([]);
 
         setLogs([]);
         setError('');
         setProjectedCompletion(null);
         setCompletedTasks([]);
         
-        const currentState = JSON.stringify({ params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, startDateOverrides, endDateOverrides, projectTasks });
+        const currentState = JSON.stringify({ params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, startDateOverrides, endDateOverrides, projectTasks, bottleneckConfig });
         setLastRunState(currentState);
         setNeedsRerun(false);
 
@@ -662,12 +839,13 @@ const handleClearAllProjects = () => {
                 DueDate: formatDate(t.DueDate),
             })),
             params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides,
-            hybridWorkers, efficiencyData, teamMemberNameMap, startDateOverrides, endDateOverrides
+            hybridWorkers, efficiencyData, teamMemberNameMap, startDateOverrides, endDateOverrides,
+            bottleneckConfig: bottleneckConfig.filter(b => b.enabled).map(b => ({ team: b.team, weight: b.weight }))
         };
 
         try {
             addLog("Sending data to scheduling server to start job...");
-            const startResponse = await fetch('https://production-scheduler-backend-aepw.onrender.com/api/schedule', {
+            const startResponse = await fetch('http://localhost:3001/api/schedule', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -684,7 +862,7 @@ const handleClearAllProjects = () => {
             // Start polling for status
             pollingIntervalRef.current = setInterval(async () => {
                 try {
-                    const statusResponse = await fetch(`https://production-scheduler-backend-aepw.onrender.com/api/schedule/status/${jobId}`);
+                    const statusResponse = await fetch(`http://localhost:3001/api/schedule/status/${jobId}`);
                     if (!statusResponse.ok) {
                         throw new Error(`Status check failed with status: ${statusResponse.status}`);
                     }
@@ -743,6 +921,7 @@ const handleClearAllProjects = () => {
                         setWeeklyOutput(results.weeklyOutput || []);
                         setDailyCompletions(results.dailyCompletions || []);
                         setTeamWorkload(results.teamWorkload || []);
+                        setDailyPrioritySnapshots(results.dailyPrioritySnapshots || []);
 
                         setCompletedTasks(results.completedTasks || []);
                         
@@ -766,7 +945,7 @@ const handleClearAllProjects = () => {
             setError(`Failed to start scheduling job: ${e.message}`);
             setIsLoading(false);
         }
-    }, [projectTasks, params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, addLog, startDateOverrides, endDateOverrides]);
+    }, [projectTasks, params, teamDefs, ptoEntries, teamMemberChanges, workHourOverrides, hybridWorkers, efficiencyData, teamMemberNameMap, addLog, startDateOverrides, endDateOverrides, bottleneckConfig]);
 
     // --- CONFIGURATION SAVE/LOAD ---
     const handleSaveConfig = () => {
@@ -778,6 +957,7 @@ const handleClearAllProjects = () => {
             hybridWorkers,
             ptoEntries,
             workHourOverrides,
+            bottleneckConfig,
         };
         const dataStr = JSON.stringify(config, null, 2);
         const blob = new Blob([dataStr], { type: 'application/json' });
@@ -834,6 +1014,7 @@ const handleClearAllProjects = () => {
                     setHybridWorkers(config.hybridWorkers || []);
                     setPtoEntries(config.ptoEntries || []);
                     setWorkHourOverrides(config.workHourOverrides || []);
+                    if (config.bottleneckConfig) setBottleneckConfig(config.bottleneckConfig);
                     setScheduleName(config.scheduleName || '');
                     addLog("Configuration loaded successfully. New teams (if any) have been added.");
                     setError('');
@@ -953,6 +1134,28 @@ const handleClearAllProjects = () => {
                     'Days +/-': row.daysVariance,
                 }));
             filename = 'store_schedule_summary.csv';
+        } else if (type === 'priority_scores') {
+            if (dailyPrioritySnapshots.length === 0) return;
+            dataToExport = dailyPrioritySnapshots.map(row => ({
+                Date: row.Date,
+                Job: row.Project,
+                Store: row.Store,
+                SKU: row.SKU,
+                'SKU Name': row['SKU Name'],
+                Operation: row.Operation,
+                Team: row.Team,
+                Order: row.Order,
+                'Hours Remaining': row.HoursRemaining,
+                BasePriority: row.BasePriority,
+                DueDateMultiplier: row.DueDateMultiplier,
+                BottleneckMultiplier: row.BottleneckMultiplier,
+                DwellMultiplier: row.DwellMultiplier,
+                TeamCapacity: row.TeamCapacity,
+                DynamicPriority: row.DynamicPriority,
+                DaysUntilDue: row.DaysUntilDue,
+                DaysSinceLastStep: row.DaysSinceLastStep,
+            }));
+            filename = 'daily_priority_scores.csv';
         } else {
             return;
         }
@@ -1026,6 +1229,7 @@ const handleClearAllProjects = () => {
                 <button onClick={() => downloadCSV('completions')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Daily Completions</button>
                 <button onClick={() => downloadCSV('project_summary')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Job Schedule Summary</button>
                 <button onClick={() => downloadCSV('store_summary')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Store Schedule Summary</button>
+                <button onClick={() => downloadCSV('priority_scores')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Daily Priority Scores</button>
             </div></div><button onClick={runSchedulingEngine} disabled={isLoading || projectTasks.length === 0} className={`flex items-center px-4 py-2 text-white rounded-md font-semibold transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed ${needsRerun ? 'bg-orange-500 hover:bg-orange-600' : 'bg-blue-600 hover:bg-blue-700'}`}>{isLoading ? (<svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>) : (needsRerun ? <RefreshCw className="w-5 h-5 mr-2" /> : <Play className="w-5 h-5 mr-2" />)}{isLoading ? 'Running...' : (needsRerun ? 'Rerun Schedule' : 'Run Schedule')}</button></div></div></div></header>
             <main className="container mx-auto p-4 sm:p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg-col-span-1 flex flex-col space-y-6">
@@ -1332,7 +1536,57 @@ const handleClearAllProjects = () => {
                 placeholder="e.g., 15"
             />
             <p className="text-xs text-slate-500 mt-1">Adds sit time after every task</p>
+        </div><div>
+            <label className="block text-sm font-medium text-slate-600">Max Idle Days Between Steps</label>
+            <input
+                type="number"
+                name="maxIdleDays"
+                value={params.maxIdleDays}
+                onChange={handleParamChange}
+                className={inputStyles}
+                placeholder="e.g., 7"
+            />
+            <p className="text-xs text-slate-500 mt-1">Boosts priority for items waiting longer than this between operations</p>
         </div></div>
+        <div className="mt-4 pt-4 border-t">
+            <label className="block text-sm font-medium text-slate-600 mb-2">Bottleneck Teams</label>
+            <p className="text-xs text-slate-500 mb-2">Check a team to tell the scheduler it's a constraint. SKUs with more hours at that team and fewer steps to reach it get prioritized first.</p>
+            <p className="text-xs text-slate-500 mb-3">When multiple teams are checked, <strong>Importance</strong> controls how much each team's needs influence the priority score relative to the others. Example: Assembly at 3 and Paint at 1 means Assembly's workload is 3x more influential than Paint's when deciding what to work on next.</p>
+            <div className="space-y-2">
+                {bottleneckConfig.map((bn, idx) => (
+                    <div key={bn.team} className="flex items-center gap-3">
+                        <input
+                            type="checkbox"
+                            checked={bn.enabled}
+                            onChange={() => {
+                                const updated = [...bottleneckConfig];
+                                updated[idx] = { ...updated[idx], enabled: !updated[idx].enabled };
+                                setBottleneckConfig(updated);
+                            }}
+                            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className={`text-sm font-medium w-24 ${bn.enabled ? 'text-slate-700' : 'text-slate-400'}`}>{bn.team}</span>
+                        <div className="flex items-center gap-1">
+                            <span className="text-xs text-slate-500">Importance:</span>
+                            <input
+                                type="number"
+                                min="1"
+                                max="5"
+                                value={bn.weight}
+                                disabled={!bn.enabled}
+                                onChange={(e) => {
+                                    const updated = [...bottleneckConfig];
+                                    updated[idx] = { ...updated[idx], weight: Math.max(1, Math.min(5, parseInt(e.target.value) || 1)) };
+                                    setBottleneckConfig(updated);
+                                }}
+                                className={`w-16 rounded-md border-gray-300 shadow-sm text-sm p-1 ${bn.enabled ? 'bg-slate-100' : 'bg-slate-200 text-slate-400'}`}
+                            />
+                            <span className="text-xs text-slate-400">/ 5</span>
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
                     </CollapsibleSection>
 
                     <CollapsibleSection title="Time Off" defaultOpen={false}>
@@ -1504,6 +1758,197 @@ const handleClearAllProjects = () => {
                                 </div>
                             )}
                         </div>
+                    </CollapsibleSection>
+
+                    <CollapsibleSection title="Daily Priority Scores" icon={BarChart} defaultOpen={false}>
+                        {dailyPrioritySnapshots.length > 0 ? (() => {
+                            const availableDates = [...new Set(dailyPrioritySnapshots.map(s => s.Date))].sort();
+                            const uniqueTeams = [...new Set(activeTrendData.map(d => d.team))].sort();
+                            const isJourney = trendGroupBy === 'sku';
+                            return (
+                                <div className="space-y-6">
+                                    {/* Group By Toggle */}
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs font-medium text-slate-500">Group by:</span>
+                                        <div className="flex items-center space-x-1 bg-slate-100 rounded-md p-0.5">
+                                            <button onClick={() => { setTrendGroupBy('operation'); setHighlightedTaskId(null); }}
+                                                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${trendGroupBy === 'operation' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                            >By Operation</button>
+                                            <button onClick={() => { setTrendGroupBy('sku'); setHighlightedTaskId(null); }}
+                                                className={`px-3 py-1 rounded text-xs font-medium transition-colors ${trendGroupBy === 'sku' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                            >By SKU Journey</button>
+                                        </div>
+                                    </div>
+
+                                    {/* Alert Table */}
+                                    {activeTrendData.length > 0 && (() => {
+                                        const alertThStyle = "px-2 py-2 text-left text-xs font-medium text-slate-500 uppercase tracking-wider cursor-pointer hover:bg-slate-200 select-none whitespace-nowrap";
+                                        const alertSortIndicator = (col) => alertSortColumn === col ? (alertSortDir === 'desc' ? ' ▼' : ' ▲') : '';
+                                        const handleAlertSort = (col) => { if (alertSortColumn === col) { setAlertSortDir(d => d === 'desc' ? 'asc' : 'desc'); } else { setAlertSortColumn(col); setAlertSortDir('desc'); } };
+                                        const maxAlertChange = sortedAlertData.length > 0 ? Math.max(...sortedAlertData.map(d => Math.abs(d.scoreChange))) : 1;
+                                        return (
+                                        <div>
+                                            <div className="flex items-center justify-between mb-2">
+                                                <div>
+                                                    <h4 className="text-sm font-semibold text-slate-700">{isJourney ? 'SKU Journey Summary' : 'Rising Priority Alerts'}</h4>
+                                                    <p className="text-xs text-slate-500">{isJourney
+                                                        ? "Each row tracks one SKU's priority journey through all operations. Click rows to highlight in chart."
+                                                        : 'Items whose priority score changed over the simulation — click column headers to sort, click rows to highlight in chart.'
+                                                    }</p>
+                                                </div>
+                                                <div className="flex items-center gap-2 flex-shrink-0">
+                                                    <label className="text-xs text-slate-500">Show:</label>
+                                                    <select value={alertTableRows} onChange={e => setAlertTableRows(Number(e.target.value))} className="rounded-md border-gray-300 shadow-sm text-xs p-1 bg-slate-100">
+                                                        {[5, 10, 15, 20, 30, 50].map(n => <option key={n} value={n}>{n} rows</option>)}
+                                                    </select>
+                                                    <span className="text-xs text-slate-400">{sortedAlertData.length} total</span>
+                                                </div>
+                                            </div>
+                                            <div className="overflow-auto relative border border-slate-200 rounded-lg" style={{ maxHeight: `${Math.min(alertTableRows * 33 + 40, 600)}px` }}>
+                                                <table className="min-w-full divide-y divide-slate-200 text-xs">
+                                                    <thead className="bg-slate-50 sticky top-0">
+                                                        <tr>
+                                                            <th className={alertThStyle} onClick={() => handleAlertSort('sku')}>SKU{alertSortIndicator('sku')}</th>
+                                                            <th className={alertThStyle} onClick={() => handleAlertSort('skuName')}>Name{alertSortIndicator('skuName')}</th>
+                                                            {isJourney ? (
+                                                                <>
+                                                                    <th className={alertThStyle} onClick={() => handleAlertSort('project')}>Project{alertSortIndicator('project')}</th>
+                                                                    <th className={alertThStyle} onClick={() => handleAlertSort('operation')}>Current Op{alertSortIndicator('operation')}</th>
+                                                                    <th className={`${alertThStyle} text-right`} onClick={() => handleAlertSort('opCount')}># Ops{alertSortIndicator('opCount')}</th>
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <th className={alertThStyle} onClick={() => handleAlertSort('operation')}>Operation{alertSortIndicator('operation')}</th>
+                                                                    <th className={alertThStyle} onClick={() => handleAlertSort('team')}>Team{alertSortIndicator('team')}</th>
+                                                                </>
+                                                            )}
+                                                            <th className={`${alertThStyle} text-right`} onClick={() => handleAlertSort('firstScore')}>First Score{alertSortIndicator('firstScore')}</th>
+                                                            <th className={`${alertThStyle} text-right`} onClick={() => handleAlertSort('lastScore')}>Last Score{alertSortIndicator('lastScore')}</th>
+                                                            <th className={`${alertThStyle} text-right`} onClick={() => handleAlertSort('scoreChange')}>Change{alertSortIndicator('scoreChange')}</th>
+                                                            <th className={`${alertThStyle} text-right`} onClick={() => handleAlertSort('daysInQueue')}>{isJourney ? 'Days Tracked' : 'Days in Queue'}{alertSortIndicator('daysInQueue')}</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="bg-white divide-y divide-slate-200">
+                                                        {sortedAlertData.slice(0, alertTableRows).map((item) => {
+                                                            const changePct = maxAlertChange > 0 ? Math.abs(item.scoreChange) / maxAlertChange : 0;
+                                                            const changeColor = changePct > 0.6 ? 'bg-red-50 text-red-700 font-bold' : changePct > 0.3 ? 'bg-amber-50 text-amber-700 font-semibold' : '';
+                                                            const isSelected = highlightedTaskId === item.taskId;
+                                                            return (
+                                                                <tr
+                                                                    key={item.taskId}
+                                                                    className={`cursor-pointer transition-colors ${isSelected ? 'bg-blue-100 ring-1 ring-blue-400' : `hover:bg-slate-50 ${changeColor}`}`}
+                                                                    onClick={() => setHighlightedTaskId(prev => prev === item.taskId ? null : item.taskId)}
+                                                                >
+                                                                    <td className="px-2 py-1.5 whitespace-nowrap font-medium">{item.sku}</td>
+                                                                    <td className="px-2 py-1.5 whitespace-nowrap max-w-[150px] truncate">{item.skuName}</td>
+                                                                    {isJourney ? (
+                                                                        <>
+                                                                            <td className="px-2 py-1.5 whitespace-nowrap">{item.project}</td>
+                                                                            <td className="px-2 py-1.5 whitespace-nowrap">
+                                                                                <span className="inline-flex items-center gap-1">
+                                                                                    <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: teamColorMap[item.team] || '#6b7280' }}></span>
+                                                                                    {item.operation}
+                                                                                </span>
+                                                                            </td>
+                                                                            <td className="px-2 py-1.5 whitespace-nowrap text-right">
+                                                                                <span className="inline-flex items-center gap-0.5">
+                                                                                    {(item.allTeams || []).map(t => (
+                                                                                        <span key={t} className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: teamColorMap[t] || '#6b7280' }} title={t}></span>
+                                                                                    ))}
+                                                                                    <span className="ml-1">{(item.opSequence || []).length}</span>
+                                                                                </span>
+                                                                            </td>
+                                                                        </>
+                                                                    ) : (
+                                                                        <>
+                                                                            <td className="px-2 py-1.5 whitespace-nowrap">{item.operation}</td>
+                                                                            <td className="px-2 py-1.5 whitespace-nowrap">
+                                                                                <span className="inline-flex items-center gap-1">
+                                                                                    <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: teamColorMap[item.team] || '#6b7280' }}></span>
+                                                                                    {item.team}
+                                                                                </span>
+                                                                            </td>
+                                                                        </>
+                                                                    )}
+                                                                    <td className="px-2 py-1.5 whitespace-nowrap text-right">{item.firstScore.toFixed(1)}</td>
+                                                                    <td className="px-2 py-1.5 whitespace-nowrap text-right">{item.lastScore.toFixed(1)}</td>
+                                                                    <td className="px-2 py-1.5 whitespace-nowrap text-right font-semibold">
+                                                                        {item.scoreChange > 0 ? '+' : ''}{item.scoreChange.toFixed(1)}
+                                                                    </td>
+                                                                    <td className="px-2 py-1.5 whitespace-nowrap text-right">{item.daysInQueue}</td>
+                                                                </tr>
+                                                            );
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            {highlightedTaskId && (
+                                                <p className="text-xs text-blue-600 mt-1">Click the highlighted row again to deselect.</p>
+                                            )}
+                                        </div>
+                                        );
+                                    })()}
+
+                                    {/* Priority Score Trends Line Chart */}
+                                    {activeTrendData.length > 0 && (
+                                        <div>
+                                            <div className="flex items-center gap-3 mb-2 flex-wrap">
+                                                <h4 className="text-sm font-semibold text-slate-700">Priority Score Trends</h4>
+                                                <select
+                                                    value={trendChartFilter}
+                                                    onChange={e => { setTrendChartFilter(e.target.value); setHighlightedTaskId(null); }}
+                                                    className="rounded-md border-gray-300 shadow-sm text-xs p-1.5 bg-slate-100"
+                                                >
+                                                    <option value="rising">Top Rising</option>
+                                                    <option value="final">Top by Final Score</option>
+                                                    <option value="byteam">Filter by Team</option>
+                                                </select>
+                                                {trendChartFilter === 'byteam' && (
+                                                    <select
+                                                        value={trendChartTeamFilter}
+                                                        onChange={e => setTrendChartTeamFilter(e.target.value)}
+                                                        className="rounded-md border-gray-300 shadow-sm text-xs p-1.5 bg-slate-100"
+                                                    >
+                                                        <option value="">Select team...</option>
+                                                        {uniqueTeams.map(t => <option key={t} value={t}>{t}</option>)}
+                                                    </select>
+                                                )}
+                                                <div className="flex items-center gap-1.5">
+                                                    <label className="text-xs text-slate-500">Show:</label>
+                                                    <input
+                                                        type="number"
+                                                        min="1"
+                                                        max="50"
+                                                        value={trendChartCount}
+                                                        onChange={e => setTrendChartCount(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+                                                        className="w-14 rounded-md border-gray-300 shadow-sm text-xs p-1.5 bg-slate-100 text-center"
+                                                    />
+                                                    <span className="text-xs text-slate-500">items</span>
+                                                </div>
+                                                <span className="text-xs text-slate-400">{filteredTrendLines.length} shown</span>
+                                            </div>
+                                            <div ref={priorityTrendChartCallbackRef} className="min-h-[22rem] relative border border-slate-200 rounded-lg bg-white">
+                                                <PriorityTrendChartComponent
+                                                    lines={filteredTrendLines}
+                                                    allDates={availableDates}
+                                                    width={priorityTrendChartDimensions.width}
+                                                    height={priorityTrendChartDimensions.height}
+                                                    teamColorMap={teamColorMap}
+                                                    highlightedTaskId={highlightedTaskId}
+                                                    onHighlight={(id) => setHighlightedTaskId(prev => prev === id ? null : id)}
+                                                    isJourneyMode={trendGroupBy === 'sku'}
+                                                />
+                                            </div>
+                                        </div>
+                                    )}
+
+                                </div>
+                            );
+                        })() : (
+                            <div className="h-40 flex items-center justify-center text-slate-500">
+                                <p>Run the schedule to see daily priority score breakdowns.</p>
+                            </div>
+                        )}
                     </CollapsibleSection>
 
                     <CollapsibleSection title="Team Workload Ratio" icon={Clock} defaultOpen={true}>
@@ -2151,6 +2596,206 @@ function TeamWorkloadChartComponent({ data, teams, width, height }) {
                             <span className={`transition-opacity duration-200 ${isDimmed ? 'opacity-30' : 'opacity-100'} ${isSelected ? 'font-bold' : ''}`}>{team.name}</span>
                         </div>
                     )
+                })}
+            </div>
+        </div>
+    );
+}
+function PriorityTrendChartComponent({ lines, allDates, width, height, teamColorMap, highlightedTaskId, onHighlight, isJourneyMode }) {
+    const [tooltip, setTooltip] = useState(null);
+    const [hoveredLine, setHoveredLine] = useState(null);
+    const svgRef = useRef(null);
+
+    if (width === 0 || height === 0 || !lines || lines.length === 0 || allDates.length === 0) return null;
+
+    const legendHeight = 50;
+    const margin = { top: 20, right: 20, bottom: 50, left: 60 };
+    const chartWidth = width - margin.left - margin.right;
+    const chartHeight = height - margin.top - margin.bottom - legendHeight;
+
+    const dateIndices = {};
+    allDates.forEach((d, i) => { dateIndices[d] = i; });
+
+    const maxScore = Math.max(...lines.flatMap(l => l.days.map(d => d.score)), 100);
+    const yMax = Math.ceil(maxScore / 50) * 50;
+
+    const xScale = (date) => margin.left + (dateIndices[date] / Math.max(allDates.length - 1, 1)) * chartWidth;
+    const yScale = (score) => margin.top + chartHeight - (score / yMax) * chartHeight;
+
+    const yTicks = [];
+    const tickStep = Math.max(50, Math.ceil(yMax / 5 / 50) * 50);
+    for (let i = 0; i <= yMax; i += tickStep) yTicks.push(i);
+
+    const xLabels = allDates.length <= 12 ? allDates : allDates.filter((_, i) => i % Math.ceil(allDates.length / 10) === 0 || i === allDates.length - 1);
+
+    return (
+        <div className="w-full h-full flex flex-col relative" onMouseLeave={() => { setTooltip(null); setHoveredLine(null); }}>
+            {tooltip && (
+                <div
+                    className="absolute bg-slate-800 text-white text-xs rounded-md p-2 shadow-lg pointer-events-none z-10"
+                    style={{ top: Math.max(10, tooltip.y - 10), left: Math.min(tooltip.x + 10, width - 180), transform: 'translateY(-100%)' }}
+                >
+                    <div className="font-bold">{tooltip.sku} - {tooltip.operation}</div>
+                    <div className="text-slate-300">{tooltip.team}</div>
+                    <div>Date: {tooltip.date}</div>
+                    <div>Score: {tooltip.score.toFixed(1)}</div>
+                    <div>Hrs Left: {tooltip.hoursLeft.toFixed(1)}</div>
+                    <div>Days to Due: {tooltip.daysToDue}</div>
+                </div>
+            )}
+            <svg ref={svgRef} width="100%" height="100%" viewBox={`0 0 ${width} ${height - legendHeight}`}>
+                <g className="text-xs">
+                    <text x={margin.left - 45} y={margin.top + chartHeight / 2} transform={`rotate(-90, ${margin.left - 45}, ${margin.top + chartHeight / 2})`} textAnchor="middle" className="fill-slate-500">Priority Score</text>
+                    <text x={margin.left + chartWidth / 2} y={margin.top + chartHeight + 40} textAnchor="middle" className="fill-slate-500">Simulation Date</text>
+                    {yTicks.map(tick => (
+                        <g key={tick} transform={`translate(0, ${yScale(tick)})`}>
+                            <line x1={margin.left} x2={width - margin.right} className="stroke-slate-200" />
+                            <text x={margin.left - 8} y="4" textAnchor="end" className="fill-slate-500">{tick}</text>
+                        </g>
+                    ))}
+                    {xLabels.map(date => {
+                        const d = new Date(date + 'T00:00:00');
+                        return (
+                            <text key={date} x={xScale(date)} y={margin.top + chartHeight + 20} textAnchor="middle" className="fill-slate-500">
+                                {d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                            </text>
+                        );
+                    })}
+                </g>
+                {/* Line paths — multi-colored segments in journey mode, single-color paths in operation mode */}
+                {lines.map(line => {
+                    const isHighlighted = highlightedTaskId === line.taskId;
+                    const isHovered = hoveredLine === line.taskId;
+                    const isDimmed = (highlightedTaskId || hoveredLine) && !isHighlighted && !isHovered;
+                    const validDays = line.days.filter(d => dateIndices[d.date] !== undefined);
+
+                    if (isJourneyMode && line.isJourney) {
+                        // Multi-colored segments for SKU journey
+                        return (
+                            <g key={line.taskId}>
+                                {validDays.map((d, i) => {
+                                    if (i === 0) return null;
+                                    const prev = validDays[i - 1];
+                                    const color = teamColorMap[d.team] || '#6b7280';
+                                    return (
+                                        <line
+                                            key={`${line.taskId}-seg-${i}`}
+                                            x1={xScale(prev.date)} y1={yScale(prev.score)}
+                                            x2={xScale(d.date)} y2={yScale(d.score)}
+                                            stroke={color}
+                                            strokeWidth={isHighlighted || isHovered ? 4 : 2}
+                                            opacity={isDimmed ? 0.15 : 1}
+                                            className="transition-all duration-200"
+                                        />
+                                    );
+                                })}
+                                {/* Diamond markers at operation transitions */}
+                                {(line.transitions || []).map((t, i) => {
+                                    const dayData = validDays.find(d => d.date === t.date);
+                                    if (!dayData) return null;
+                                    const cx = xScale(t.date);
+                                    const cy = yScale(dayData.score);
+                                    const size = 5;
+                                    return (
+                                        <polygon
+                                            key={`${line.taskId}-trans-${i}`}
+                                            points={`${cx},${cy - size} ${cx + size},${cy} ${cx},${cy + size} ${cx - size},${cy}`}
+                                            fill={teamColorMap[t.toTeam] || '#6b7280'}
+                                            stroke="white" strokeWidth="1"
+                                            opacity={isDimmed ? 0.15 : 1}
+                                            className="transition-all duration-200"
+                                        />
+                                    );
+                                })}
+                            </g>
+                        );
+                    } else {
+                        // Single-color path for operation mode
+                        const color = teamColorMap[line.team] || '#6b7280';
+                        const pathData = validDays
+                            .map((d, i) => `${i === 0 ? 'M' : 'L'} ${xScale(d.date)},${yScale(d.score)}`)
+                            .join(' ');
+                        return (
+                            <path
+                                key={line.taskId}
+                                d={pathData}
+                                className="fill-none transition-all duration-200"
+                                strokeWidth={isHighlighted || isHovered ? 4 : 2}
+                                stroke={color}
+                                opacity={isDimmed ? 0.15 : 1}
+                            />
+                        );
+                    }
+                })}
+                {/* Invisible hitbox circles for hover/click */}
+                {lines.flatMap(line => {
+                    return line.days
+                        .filter(d => dateIndices[d.date] !== undefined)
+                        .map((d, i) => (
+                            <circle
+                                key={`${line.taskId}-${i}`}
+                                cx={xScale(d.date)}
+                                cy={yScale(d.score)}
+                                r="6"
+                                className="fill-transparent cursor-pointer"
+                                strokeWidth="0"
+                                onMouseOver={(e) => {
+                                    const rect = svgRef.current.getBoundingClientRect();
+                                    setTooltip({
+                                        x: e.clientX - rect.left,
+                                        y: e.clientY - rect.top,
+                                        sku: line.sku,
+                                        operation: isJourneyMode ? (d.operation || line.operation) : line.operation,
+                                        team: isJourneyMode ? (d.team || line.team) : line.team,
+                                        date: d.date,
+                                        score: d.score,
+                                        hoursLeft: d.hoursLeft,
+                                        daysToDue: d.daysToDue,
+                                    });
+                                    setHoveredLine(line.taskId);
+                                }}
+                                onClick={() => onHighlight && onHighlight(line.taskId)}
+                            />
+                        ));
+                })}
+            </svg>
+            {/* Legend */}
+            <div className="flex-shrink-0 flex flex-wrap justify-center items-center pt-1 gap-x-3 gap-y-1 overflow-y-auto" style={{ maxHeight: `${legendHeight}px` }}>
+                {lines.map(line => {
+                    const isHighlighted = highlightedTaskId === line.taskId;
+                    const isDimmed = (highlightedTaskId || hoveredLine) && !isHighlighted && hoveredLine !== line.taskId;
+                    if (isJourneyMode && line.isJourney) {
+                        return (
+                            <div key={line.taskId} className="flex items-center text-xs cursor-pointer"
+                                onClick={() => onHighlight && onHighlight(line.taskId)}
+                                onMouseEnter={() => setHoveredLine(line.taskId)}
+                                onMouseLeave={() => setHoveredLine(null)}
+                            >
+                                <div className="flex mr-1">
+                                    {(line.allTeams || [line.team]).slice(0, 5).map((t, i) => (
+                                        <div key={t} className="w-2.5 h-2.5 rounded-sm border border-white" title={t}
+                                            style={{ backgroundColor: teamColorMap[t] || '#6b7280', marginLeft: i > 0 ? '-2px' : 0 }}></div>
+                                    ))}
+                                </div>
+                                <span className={`transition-opacity duration-200 ${isDimmed ? 'opacity-30' : 'opacity-100'} ${isHighlighted ? 'font-bold' : ''}`}>
+                                    {line.sku}
+                                </span>
+                            </div>
+                        );
+                    }
+                    const color = teamColorMap[line.team] || '#6b7280';
+                    return (
+                        <div key={line.taskId} className="flex items-center text-xs cursor-pointer"
+                            onClick={() => onHighlight && onHighlight(line.taskId)}
+                            onMouseEnter={() => setHoveredLine(line.taskId)}
+                            onMouseLeave={() => setHoveredLine(null)}
+                        >
+                            <div className="w-3 h-3 rounded-sm mr-1" style={{ backgroundColor: color }}></div>
+                            <span className={`transition-opacity duration-200 ${isDimmed ? 'opacity-30' : 'opacity-100'} ${isHighlighted ? 'font-bold' : ''}`}>
+                                {line.sku}/{line.operation}
+                            </span>
+                        </div>
+                    );
                 })}
             </div>
         </div>
