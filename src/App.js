@@ -1,6 +1,8 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { PlusCircle, Upload, Download, Play, XCircle, ChevronDown, ChevronUp, UserPlus, Trash2, Clock, BarChart, LineChart, RefreshCw, Users, GitMerge, DollarSign, Building, Briefcase, Trello, Lightbulb, Wrench, CheckCircle, Save } from 'lucide-react';
 
+const API_BASE_URL = process.env.REACT_APP_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:3001' : 'https://production-scheduler-backend-aepw.onrender.com');
+
 // Helper function to parse dates, robust to different formats
 const parseDate = (dateStr) => {
     if (!dateStr || typeof dateStr !== 'string') return null;
@@ -735,7 +737,7 @@ const handleClearAllProjects = () => {
 
         try {
             addLog("Sending data to optimizer...");
-            const startResponse = await fetch('http://localhost:3001/api/optimize', {
+            const startResponse = await fetch(`${API_BASE_URL}/api/optimize`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -751,7 +753,7 @@ const handleClearAllProjects = () => {
 
             const pollInterval = setInterval(async () => {
                 try {
-                    const statusResponse = await fetch(`http://localhost:3001/api/schedule/status/${jobId}`);
+                    const statusResponse = await fetch(`${API_BASE_URL}/api/schedule/status/${jobId}`);
                     if (!statusResponse.ok) throw new Error(`Status check failed`);
                     
                     const jobStatus = await statusResponse.json();
@@ -845,7 +847,7 @@ const handleClearAllProjects = () => {
 
         try {
             addLog("Sending data to scheduling server to start job...");
-            const startResponse = await fetch('http://localhost:3001/api/schedule', {
+            const startResponse = await fetch(`${API_BASE_URL}/api/schedule`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -862,7 +864,7 @@ const handleClearAllProjects = () => {
             // Start polling for status
             pollingIntervalRef.current = setInterval(async () => {
                 try {
-                    const statusResponse = await fetch(`http://localhost:3001/api/schedule/status/${jobId}`);
+                    const statusResponse = await fetch(`${API_BASE_URL}/api/schedule/status/${jobId}`);
                     if (!statusResponse.ok) {
                         throw new Error(`Status check failed with status: ${statusResponse.status}`);
                     }
@@ -1050,6 +1052,7 @@ const handleClearAllProjects = () => {
             "Value": task.Value,
             "LagAfterHours": task.LagAfterHours || 0,
             "AssemblyGroup": task.AssemblyGroup || '',
+            "DelayUntilClose": task.DelayUntilClose ? 'TRUE' : '',
             "StartDate": formatDate(task.StartDate),
             "DueDate": formatDate(task.DueDate)
         }));
