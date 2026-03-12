@@ -761,7 +761,8 @@ const handleClearAllProjects = () => {
                     if (jobStatus.status === 'complete') {
                         clearInterval(pollInterval);
                         const results = jobStatus.result;
-                        
+                        if (!results) return;
+
                         setOptimizationResults(results);
                         setLogs(results.logs || []);
                         
@@ -879,6 +880,7 @@ const handleClearAllProjects = () => {
                         addLog("Job complete. Processing final results.");
                         
                         const results = jobStatus.result;
+                        if (!results) return; // Result already delivered on a previous poll
                         setLogs(results.logs || []);
                         if (results.error) setError(results.error);
                         
