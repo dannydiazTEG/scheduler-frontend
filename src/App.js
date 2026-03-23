@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { PlusCircle, Upload, Download, Play, XCircle, ChevronDown, ChevronUp, UserPlus, Trash2, Clock, BarChart, LineChart, RefreshCw, Users, GitMerge, DollarSign, Building, Briefcase, Trello, Lightbulb, Wrench, CheckCircle, Save } from 'lucide-react';
+import { PlusCircle, Upload, Download, Play, XCircle, ChevronDown, ChevronUp, UserPlus, Trash2, Clock, BarChart, LineChart, RefreshCw, Users, GitMerge, DollarSign, Building, Briefcase, Trello, Lightbulb, Wrench, CheckCircle, Save, TrendingUp } from 'lucide-react';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || (window.location.hostname === 'localhost' ? 'http://localhost:3001' : 'https://production-scheduler-backend-aepw.onrender.com');
 
@@ -207,6 +207,9 @@ export default function App() {
     const [ganttChartDimensions, setGanttChartDimensions] = useState({ width: 0, height: 0 });
     const priorityTrendChartRef = useRef(null);
     const [priorityTrendChartDimensions, setPriorityTrendChartDimensions] = useState({ width: 0, height: 0 });
+    const completionChartContainerRef = useRef(null);
+    const [completionChartDimensions, setCompletionChartDimensions] = useState({ width: 0, height: 0 });
+    const [projectCompletionTimeline, setProjectCompletionTimeline] = useState(null);
     const fileInputRef = useRef(null); // For loading config
 
     const inputStyles = "mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 bg-slate-100";
@@ -430,6 +433,7 @@ export default function App() {
             { ref: workloadChartContainerRef, handler: createResizeHandler(workloadChartContainerRef, setWorkloadChartDimensions) },
             { ref: ganttChartContainerRef, handler: createResizeHandler(ganttChartContainerRef, setGanttChartDimensions) },
             { ref: priorityTrendChartRef, handler: createResizeHandler(priorityTrendChartRef, setPriorityTrendChartDimensions) },
+            { ref: completionChartContainerRef, handler: createResizeHandler(completionChartContainerRef, setCompletionChartDimensions) },
         ];
 
         const resizeObservers = observers.map(({ ref, handler }) => {
@@ -928,7 +932,8 @@ const handleClearAllProjects = () => {
                         setDailyPrioritySnapshots(results.dailyPrioritySnapshots || []);
 
                         setCompletedTasks(results.completedTasks || []);
-                        
+                        setProjectCompletionTimeline(results.projectCompletionTimeline || null);
+
                         setProgressMessage("Schedule complete!");
                         setProgressStep('done');
                         setTimeout(() => setIsLoading(false), 1000);
@@ -1161,6 +1166,19 @@ const handleClearAllProjects = () => {
                 DaysSinceLastStep: row.DaysSinceLastStep,
             }));
             filename = 'daily_priority_scores.csv';
+        } else if (type === 'completion_timeline') {
+            if (!projectCompletionTimeline || !projectCompletionTimeline.projects || projectCompletionTimeline.projects.length === 0) return;
+            dataToExport = projectCompletionTimeline.projects.flatMap(p =>
+                p.timeline.map(day => ({
+                    Job: p.project,
+                    Store: p.store,
+                    Date: day.date,
+                    'Completed Hours': day.completedHours,
+                    'Total Hours': p.totalHours,
+                    'Completion %': day.completionPct
+                }))
+            );
+            filename = 'project_completion_timeline.csv';
         } else {
             return;
         }
@@ -1235,6 +1253,7 @@ const handleClearAllProjects = () => {
                 <button onClick={() => downloadCSV('project_summary')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Job Schedule Summary</button>
                 <button onClick={() => downloadCSV('store_summary')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Store Schedule Summary</button>
                 <button onClick={() => downloadCSV('priority_scores')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Daily Priority Scores</button>
+                <button onClick={() => downloadCSV('completion_timeline')} className="block w-full text-left px-4 py-2 text-sm hover:bg-slate-100">Completion Timeline</button>
             </div></div><button onClick={runSchedulingEngine} disabled={isLoading || projectTasks.length === 0} className={`flex items-center px-4 py-2 text-white rounded-md font-semibold transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed ${needsRerun ? 'bg-orange-500 hover:bg-orange-600' : 'bg-blue-600 hover:bg-blue-700'}`}>{isLoading ? (<svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>) : (needsRerun ? <RefreshCw className="w-5 h-5 mr-2" /> : <Play className="w-5 h-5 mr-2" />)}{isLoading ? 'Running...' : (needsRerun ? 'Rerun Schedule' : 'Run Schedule')}</button></div></div></div></header>
             <main className="container mx-auto p-4 sm:p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg-col-span-1 flex flex-col space-y-6">
@@ -1648,6 +1667,22 @@ const handleClearAllProjects = () => {
                             ) : (
                                 <div className="h-full flex items-center justify-center text-slate-500">
                                     <p>{summaryData.project.length > 0 ? 'No jobs match your filter.' : 'Run the schedule to see the project timeline.'}</p>
+                                </div>
+                            )}
+                        </div>
+                    </CollapsibleSection>
+
+                    <CollapsibleSection title="Project Completion Over Time" icon={TrendingUp} defaultOpen={true}>
+                        <div ref={completionChartContainerRef} className="flex-grow min-h-[24rem] relative">
+                            {projectCompletionTimeline && projectCompletionTimeline.projects && projectCompletionTimeline.projects.length > 0 ? (
+                                <ProjectCompletionChartComponent
+                                    data={projectCompletionTimeline}
+                                    width={completionChartDimensions.width}
+                                    height={completionChartDimensions.height}
+                                />
+                            ) : (
+                                <div className="h-full flex items-center justify-center text-slate-500">
+                                    <p>Run the schedule to see project completion trends.</p>
                                 </div>
                             )}
                         </div>
@@ -2428,6 +2463,174 @@ function UtilizationLineChartComponent({ data, teams, width, height }) {
                             <span className={`transition-opacity duration-200 ${isDimmed ? 'opacity-30' : 'opacity-100'} ${isSelected ? 'font-bold' : ''}`}>{team.name}</span>
                         </div>
                     )
+                })}
+            </div>
+        </div>
+    );
+}
+
+// --- Project Completion Over Time Chart ---
+const PROJECT_COLORS = [
+    '#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6',
+    '#ec4899', '#06b6d4', '#f97316', '#14b8a6', '#6366f1',
+    '#84cc16', '#e11d48', '#0ea5e9', '#a855f7', '#10b981',
+    '#d946ef', '#eab308', '#64748b', '#f43f5e', '#2dd4bf',
+];
+
+function ProjectCompletionChartComponent({ data, width, height }) {
+    const [tooltip, setTooltip] = useState(null);
+    const [hoveredProject, setHoveredProject] = useState(null);
+    const [selectedProject, setSelectedProject] = useState(null);
+    const svgRef = useRef(null);
+
+    const handleLegendClick = (projName) => {
+        setSelectedProject(prev => (prev === projName ? null : projName));
+    };
+
+    const chartData = useMemo(() => {
+        if (!data || !data.projects || data.projects.length === 0 || !data.dates || data.dates.length === 0) {
+            return { lines: [], points: [], minDate: null, maxDate: null };
+        }
+
+        const allDates = data.dates.map(d => parseDate(d)).filter(Boolean).map(d => d.getTime());
+        if (allDates.length === 0) return { lines: [], points: [], minDate: null, maxDate: null };
+
+        const minDate = Math.min(...allDates);
+        const maxDate = Math.max(...allDates);
+
+        const lines = data.projects.map((proj, i) => ({
+            name: proj.project,
+            store: proj.store,
+            totalHours: proj.totalHours,
+            color: PROJECT_COLORS[i % PROJECT_COLORS.length],
+            values: proj.timeline.map(t => ({
+                date: parseDate(t.date)?.getTime(),
+                completedHours: t.completedHours,
+                completionPct: t.completionPct,
+            })).filter(v => v.date != null).sort((a, b) => a.date - b.date)
+        }));
+
+        const points = lines.flatMap(line =>
+            line.values.map(v => ({ ...v, name: line.name, store: line.store, totalHours: line.totalHours, color: line.color }))
+        );
+
+        return { lines, points, minDate, maxDate };
+    }, [data]);
+
+    if (width === 0 || height === 0 || !chartData.minDate) return null;
+
+    const legendHeight = 50;
+    const margin = { top: 20, right: 20, bottom: 50, left: 55 };
+    const chartWidth = width - margin.left - margin.right;
+    const chartHeight = height - margin.top - margin.bottom - legendHeight;
+
+    const dateRange = chartData.maxDate - chartData.minDate;
+    const xScale = (date) => margin.left + ((date - chartData.minDate) / (dateRange || 1)) * chartWidth;
+    const yScale = (pct) => margin.top + chartHeight - (Math.min(pct, 100) / 100) * chartHeight;
+
+    // Thin date labels to ~8
+    const dateLabels = data.dates.map(d => parseDate(d)).filter(Boolean);
+    const labelStep = Math.max(1, Math.ceil(dateLabels.length / 8));
+
+    const handleMouseLeave = () => {
+        setTooltip(null);
+    };
+
+    return (
+        <div className="w-full h-full flex flex-col relative" onMouseLeave={handleMouseLeave}>
+            {tooltip && (
+                <div
+                    className="absolute bg-slate-800 text-white text-xs rounded-md p-2 shadow-lg pointer-events-none transition-opacity duration-200 z-10"
+                    style={{ top: tooltip.y - 10, left: tooltip.x + 10, transform: 'translateY(-100%)' }}
+                >
+                    <div className="font-bold">{tooltip.name}</div>
+                    {tooltip.store && <div className="text-slate-300">{tooltip.store}</div>}
+                    <div>Date: {new Date(tooltip.date).toLocaleDateString()}</div>
+                    <div>Completion: {tooltip.completionPct}%</div>
+                    <div>Hours: {tooltip.completedHours} / {tooltip.totalHours}</div>
+                </div>
+            )}
+            <svg ref={svgRef} width="100%" height="100%" viewBox={`0 0 ${width} ${height - legendHeight}`}>
+                {/* Axes and Gridlines */}
+                <g className="text-xs">
+                    <text x={margin.left - 40} y={margin.top + chartHeight / 2} transform={`rotate(-90, ${margin.left - 40}, ${margin.top + chartHeight / 2})`} textAnchor="middle" className="fill-slate-500">Completion %</text>
+                    <text x={margin.left + chartWidth / 2} y={margin.top + chartHeight + 40} textAnchor="middle" className="fill-slate-500">Date</text>
+                    {[0, 25, 50, 75, 100].map(tick => (
+                        <g key={tick} transform={`translate(0, ${yScale(tick)})`}>
+                            <line x1={margin.left} x2={width - margin.right} className="stroke-slate-200" />
+                            <text x={margin.left - 8} y="4" textAnchor="end" className="fill-slate-500">{tick}%</text>
+                        </g>
+                    ))}
+                    {dateLabels.map((d, i) => {
+                        if (i % labelStep === 0) {
+                            return (
+                                <text key={i} x={xScale(d.getTime())} y={margin.top + chartHeight + 20} textAnchor="middle" className="fill-slate-500">
+                                    {d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                                </text>
+                            );
+                        }
+                        return null;
+                    })}
+                </g>
+                {/* Data Lines */}
+                {chartData.lines.map(line => {
+                    if (line.values.length === 0) return null;
+                    const isSelected = selectedProject === line.name;
+                    const isHovered = hoveredProject === line.name;
+                    const isDimmed = selectedProject && !isSelected;
+
+                    return (
+                        <path
+                            key={line.name}
+                            d={`M ${line.values.map(p => `${xScale(p.date)},${yScale(p.completionPct)}`).join(' L ')}`}
+                            className="fill-none transition-all duration-200"
+                            strokeWidth={isSelected || isHovered ? 4 : 2}
+                            stroke={line.color}
+                            opacity={isDimmed ? 0.15 : 1}
+                        />
+                    );
+                })}
+                {/* Data Points for Hovering */}
+                {chartData.points.map((point, i) => (
+                    <circle
+                        key={i}
+                        cx={xScale(point.date)}
+                        cy={yScale(point.completionPct)}
+                        r="8"
+                        className="fill-transparent"
+                        onMouseOver={(e) => {
+                            const rect = svgRef.current.getBoundingClientRect();
+                            setTooltip({
+                                x: e.clientX - rect.left,
+                                y: e.clientY - rect.top,
+                                name: point.name,
+                                store: point.store,
+                                date: point.date,
+                                completionPct: point.completionPct,
+                                completedHours: point.completedHours,
+                                totalHours: point.totalHours,
+                            });
+                            setHoveredProject(point.name);
+                        }}
+                    />
+                ))}
+            </svg>
+            <div className="flex-shrink-0 flex flex-wrap justify-center items-center pt-2 gap-x-4 gap-y-1 max-h-[50px] overflow-y-auto">
+                {chartData.lines.map(line => {
+                    const isSelected = selectedProject === line.name;
+                    const isDimmed = selectedProject && !isSelected;
+                    return (
+                        <div
+                            key={line.name}
+                            className="flex items-center text-xs cursor-pointer"
+                            onClick={() => handleLegendClick(line.name)}
+                            onMouseEnter={() => setHoveredProject(line.name)}
+                            onMouseLeave={() => setHoveredProject(null)}
+                        >
+                            <div className="w-3 h-3 rounded-sm mr-1 flex-shrink-0" style={{ backgroundColor: line.color }}></div>
+                            <span className={`transition-opacity duration-200 whitespace-nowrap ${isDimmed ? 'opacity-30' : 'opacity-100'} ${isSelected ? 'font-bold' : ''}`}>{line.name}</span>
+                        </div>
+                    );
                 })}
             </div>
         </div>
