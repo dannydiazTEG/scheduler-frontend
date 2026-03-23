@@ -1173,8 +1173,8 @@ const handleClearAllProjects = () => {
                     Job: p.project,
                     Store: p.store,
                     Date: day.date,
-                    'Completed Hours': day.completedHours,
-                    'Total Hours': p.totalHours,
+                    'Completed Ops': day.completedOps,
+                    'Total Ops': p.totalOps,
                     'Completion %': day.completionPct
                 }))
             );
@@ -2501,17 +2501,18 @@ function ProjectCompletionChartComponent({ data, width, height }) {
         const lines = data.projects.map((proj, i) => ({
             name: proj.project,
             store: proj.store,
-            totalHours: proj.totalHours,
+            totalOps: proj.totalOps,
             color: PROJECT_COLORS[i % PROJECT_COLORS.length],
             values: proj.timeline.map(t => ({
                 date: parseDate(t.date)?.getTime(),
-                completedHours: t.completedHours,
+                completedOps: t.completedOps,
+                totalOps: t.totalOps,
                 completionPct: t.completionPct,
             })).filter(v => v.date != null).sort((a, b) => a.date - b.date)
         }));
 
         const points = lines.flatMap(line =>
-            line.values.map(v => ({ ...v, name: line.name, store: line.store, totalHours: line.totalHours, color: line.color }))
+            line.values.map(v => ({ ...v, name: line.name, store: line.store, color: line.color }))
         );
 
         return { lines, points, minDate, maxDate };
@@ -2547,7 +2548,7 @@ function ProjectCompletionChartComponent({ data, width, height }) {
                     {tooltip.store && <div className="text-slate-300">{tooltip.store}</div>}
                     <div>Date: {new Date(tooltip.date).toLocaleDateString()}</div>
                     <div>Completion: {tooltip.completionPct}%</div>
-                    <div>Hours: {tooltip.completedHours} / {tooltip.totalHours}</div>
+                    <div>Operations: {tooltip.completedOps} / {tooltip.totalOps}</div>
                 </div>
             )}
             <svg ref={svgRef} width="100%" height="100%" viewBox={`0 0 ${width} ${height - legendHeight}`}>
@@ -2607,8 +2608,8 @@ function ProjectCompletionChartComponent({ data, width, height }) {
                                 store: point.store,
                                 date: point.date,
                                 completionPct: point.completionPct,
-                                completedHours: point.completedHours,
-                                totalHours: point.totalHours,
+                                completedOps: point.completedOps,
+                                totalOps: point.totalOps,
                             });
                             setHoveredProject(point.name);
                         }}
