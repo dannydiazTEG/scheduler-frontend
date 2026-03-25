@@ -87,6 +87,7 @@ const createDefaultTeamDefs = () => {
             // New Mappings
             { id: 11, team: 'Receiving', operation: 'Receiving' }, 
             { id: 12, team: 'QC', operation: 'Quality Review / Testing' },
+            { id: 13, team: 'Tech', operation: 'Component Testing' },
         ],
     };
 };
