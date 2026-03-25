@@ -211,6 +211,7 @@ export default function App() {
     const completionChartContainerRef = useRef(null);
     const [completionChartDimensions, setCompletionChartDimensions] = useState({ width: 0, height: 0 });
     const [projectCompletionTimeline, setProjectCompletionTimeline] = useState(null);
+    const [completionView, setCompletionView] = useState('job'); // 'job' | 'store'
     const fileInputRef = useRef(null); // For loading config
 
     const inputStyles = "mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 bg-slate-100";
@@ -346,6 +347,51 @@ export default function App() {
             .filter(Boolean)
             .sort((a, b) => b.scoreChange - a.scoreChange);
     }, [dailyPrioritySnapshots]);
+
+    // Active completion data switches between job-level and store-level grouping
+    const activeCompletionData = React.useMemo(() => {
+        if (!projectCompletionTimeline || !projectCompletionTimeline.projects) return projectCompletionTimeline;
+        if (completionView === 'job') return projectCompletionTimeline;
+
+        const allDates = projectCompletionTimeline.dates || [];
+
+        // Forward-fill each project's timeline so we have a value for every date
+        const projectFilled = projectCompletionTimeline.projects.map(proj => {
+            const lookup = {};
+            let last = 0;
+            for (const date of allDates) {
+                const entry = proj.timeline.find(t => t.date === date);
+                if (entry) last = entry.completedOps;
+                lookup[date] = last;
+            }
+            return { store: proj.store || 'Unknown', totalOps: proj.totalOps, lookup };
+        });
+
+        // Group by store and aggregate
+        const storeMap = {};
+        for (const pf of projectFilled) {
+            if (!storeMap[pf.store]) {
+                storeMap[pf.store] = { totalOps: 0, projects: [] };
+            }
+            storeMap[pf.store].totalOps += pf.totalOps;
+            storeMap[pf.store].projects.push(pf);
+        }
+
+        const projects = Object.entries(storeMap).map(([store, info]) => {
+            const timeline = allDates.map(date => {
+                const completedOps = info.projects.reduce((sum, p) => sum + p.lookup[date], 0);
+                return {
+                    date,
+                    completedOps,
+                    totalOps: info.totalOps,
+                    completionPct: Math.round(Math.min((completedOps / info.totalOps) * 100, 100) * 10) / 10,
+                };
+            });
+            return { project: store, store, totalOps: info.totalOps, timeline };
+        });
+
+        return { projects, dates: allDates };
+    }, [projectCompletionTimeline, completionView]);
 
     // Active trend data switches between operation-level and SKU journey grouping
     const activeTrendData = React.useMemo(() => {
@@ -1168,11 +1214,12 @@ const handleClearAllProjects = () => {
             }));
             filename = 'daily_priority_scores.csv';
         } else if (type === 'completion_timeline') {
-            if (!projectCompletionTimeline || !projectCompletionTimeline.projects || projectCompletionTimeline.projects.length === 0) return;
-            dataToExport = projectCompletionTimeline.projects.flatMap(p =>
+            const source = activeCompletionData;
+            if (!source || !source.projects || source.projects.length === 0) return;
+            dataToExport = source.projects.flatMap(p =>
                 p.timeline.map(day => ({
-                    Job: p.project,
-                    Store: p.store,
+                    [completionView === 'store' ? 'Store' : 'Job']: p.project,
+                    ...(completionView === 'job' ? { Store: p.store } : {}),
                     Date: day.date,
                     'Completed Ops': day.completedOps,
                     'Total Ops': p.totalOps,
@@ -1674,10 +1721,21 @@ const handleClearAllProjects = () => {
                     </CollapsibleSection>
 
                     <CollapsibleSection title="Project Completion Over Time" icon={TrendingUp} defaultOpen={true}>
+                        <div className="flex items-center gap-2 mb-3">
+                            <span className="text-xs font-medium text-slate-500">View:</span>
+                            <div className="flex items-center space-x-1 bg-slate-100 rounded-md p-0.5">
+                                <button onClick={() => setCompletionView('job')}
+                                    className={`px-3 py-1 rounded text-xs font-medium transition-colors ${completionView === 'job' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                >By Job</button>
+                                <button onClick={() => setCompletionView('store')}
+                                    className={`px-3 py-1 rounded text-xs font-medium transition-colors ${completionView === 'store' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                >By Store</button>
+                            </div>
+                        </div>
                         <div ref={completionChartContainerRef} className="flex-grow min-h-[24rem] relative">
-                            {projectCompletionTimeline && projectCompletionTimeline.projects && projectCompletionTimeline.projects.length > 0 ? (
+                            {activeCompletionData && activeCompletionData.projects && activeCompletionData.projects.length > 0 ? (
                                 <ProjectCompletionChartComponent
-                                    data={projectCompletionTimeline}
+                                    data={activeCompletionData}
                                     width={completionChartDimensions.width}
                                     height={completionChartDimensions.height}
                                 />
